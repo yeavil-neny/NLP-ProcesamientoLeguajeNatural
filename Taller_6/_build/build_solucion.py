@@ -80,7 +80,7 @@ Frente a los notebooks guía (que consumen los servidores de ejemplo `weather` y
 2. **Un corpus y un índice construidos por el taller**: 19.249 recetas curadas del Taller 5, serializadas a JSON y servidas mediante un índice invertido propio (pesos por campo, normalización sin tildes y tratamiento del plural) — un conjunto de datos nuevo respecto a la guía, que no consume dataset alguno.
 3. **Dos fuentes complementarias en el mismo problema de negocio, cada una de un tipo distinto**: una base de datos real **SQLite** con datos sintéticos honestos (kcal por 100 g, alergenos orientativos de los 9 grupos mayores de la FDA y la nevera del usuario, todos en modo solo lectura) y una **API viva de terceros** (OpenFoodFacts, sin llave) con respaldo en caché para que la corrida nunca se detenga — archivos+SQL+API, las tres formas de conectividad MCP.
 4. **Arranque automático y robusto de la infraestructura**: `ollama serve` y los cuatro servidores se lanzan desde el notebook y se esperan con sondeos de salud por puerto, frente al arranque manual pedido en las guías.
-5. **Un experimento dirigido de 39 turnos (13 consultas x 3 modos)** con métricas de acierto en la selección de tool, de referencias y de latencia, más gráficos comparativos; y una **batería de validación de las 9 herramientas** (27 consultas, 3 por herramienta, más 2 mezclas multi-servidor y un caso sin datos) que documenta el correcto funcionamiento de cada una: la guía no hace experimentación ni validación.
+5. **Un experimento dirigido de 39 turnos (13 consultas x 3 modos)** con métricas de acierto en la selección de tool, de referencias y de latencia, más gráficos comparativos; y una **batería de validación de las 9 herramientas en 90 turnos** (categoría `tool`: 27 consultas x 3 modos; categoría `todas_las_tools`: 2 mezclas x 3 modos; categoría `sin_datos`: 1 caso x 3 modos), ordenada por categoría de pregunta, tool y modo de ejecución: la guía no hace experimentación ni validación.
 6. **Un análisis cualitativo de los fallos**, tanto de las demostraciones (sección 8) como de los turnos fallidos del experimento (sección 9), con sus causas: fallo de invocación, redacción que pierde datos y aritmética que sustituye al resultado de la tool.
 7. **La traza MCP visible en la interfaz**: cada respuesta de Gradio muestra el modo, las tools invocadas y la latencia; es la evidencia en pantalla de que el agente consumió los servidores.
 """)
@@ -850,12 +850,13 @@ md(r"""
 md(r"""
 ### 8.1 Batería de validación de las herramientas: 27 consultas + 2 mezclas + 1 caso sin datos
 
-Esta subsección documenta el **chequeo de correcto funcionamiento del protocolo con las nueve herramientas y los cuatro servidores**: para cada una de las 9 tools se plantean **3 consultas** (27 turnos en modo Guided, con la heurística del host activa) y se verifica que la herramienta esperada sea la invocada. Complementan la batería:
+Esta subsección documenta el **chequeo de correcto funcionamiento del protocolo con las nueve herramientas y los cuatro servidores**, con el orden de ejecución fijado en dos niveles: **por categoría de pregunta** (cada una con su tool) y, dentro de cada consulta, **por estrategia o modo de ejecución del agente** (Guided, Autonomous, Deterministic):
 
-- **2 consultas mezcla** que cruzan varias tools (y varios servidores) en un solo turno, incluida una que pide encadenar la mayoría de las capacidades del asistente;
-- **1 consulta sin respuesta posible**: información que no existe ni en el corpus ni en las tools — la expectativa correcta es que el agente **no invoque ninguna herramienta** y admita que no puede responder (reproducción honesta del riesgo de alucinacion que MCP evita cuando la herramienta responde).
+- **Categoría `tool`**: para cada una de las 9 tools se plantean **3 consultas**, y cada consulta corre en los 3 modos (81 turnos). El chequeo pasa si la tool esperada es la invocada.
+- **Categoría `todas_las_tools`**: 2 consultas mezcla que cruzan varias tools y varios servidores en un solo turno — cada mezcla corre en los 3 modos (6 turnos). En Guided y Autonomous el chequeo pasa si la cadena completa de tools se produjo; en Deterministic el host solo ejecuta la tool inferida (se registra esa conducta, no un fallo).
+- **Categoría `sin_datos`**: 1 consulta con información que no existe ni en el corpus ni en las tools, en los 3 modos (3 turnos) — la expectativa correcta es que el agente **no invoque ninguna herramienta** y admita que no puede responder (reproducción honesta del riesgo de alucinacion que MCP evita cuando la herramienta sí responde).
 
-Cada turno se registra con su tool usada, el resultado del chequeo y la latencia; el resumen al final agrega el acierto por herramienta.
+Total de la batería: **90 turnos**. Cada turno se registra con su modo, tool usada, el resultado del chequeo y la latencia; el resumen al final agrega el acierto por (categoría, herramienta, modo).
 """)
 
 code(r"""
@@ -921,49 +922,67 @@ MEZCLAS = [
 
 SIN_DATOS = 'Recomiendame un restaurante japonés cerca de la Torre Eiffel con reserva para mañana.'
 
-async def correr_bateria():
-    filas = []
-    for herramienta, consultas in VALIDACION:
-        for n, consulta in enumerate(consultas, 1):
-            resp, traza, seg = await responder(consulta, modo='Guided')
-            usadas = traza.get('tools_usadas') or []
-            ok = herramienta in usadas
-            filas.append({'tipo': 'tool', 'ref': herramienta, 'caso': n,
-                          'usadas': ','.join(usadas) or '(ninguna)', 'ok': ok,
-                          'latencia_s': round(seg, 1)})
-            print(f"{herramienta:<21} | caso {n} | usadas={','.join(usadas) or '-':<45} | ok={ok} | {seg:.1f}s")
-    for (consulta, esperadas), n in zip(MEZCLAS, (1, 2)):
-        resp, traza, seg = await responder(consulta, modo='Guided')
-        usadas = traza.get('tools_usadas') or []
-        acertadas = sum(t in usadas for t in esperadas)
-        ok = acertadas == len(esperadas)
-        filas.append({'tipo': 'mezcla', 'ref': f'mezcla {n}', 'caso': n,
-                      'usadas': ','.join(usadas) or '(ninguna)',
-                      'ok': ok, 'latencia_s': round(seg, 1),
-                      'esperadas': f'{acertadas}/{len(esperadas)}'})
-        print(f"mezcla {n}       | usadas={','.join(usadas) or '-':<45} | esperadas {acertadas}/{len(esperadas)} | {seg:.1f}s")
-    resp, traza, seg = await responder(SIN_DATOS, modo='Guided')
+async def validar_caso(tipo, ref, consulta, modo, esperada):
+    # Un turno de la bateria: la regla de ok depende del tipo de caso y del
+    # modo (docstring evitada: el bloque de celda va entre comillas triples).
+    resp, traza, seg = await responder(consulta, modo=modo)
     usadas = traza.get('tools_usadas') or []
-    ok = len(usadas) == 0
-    filas.append({'tipo': 'abstencion', 'ref': 'sin datos', 'caso': 1,
-                  'usadas': ','.join(usadas) or '(ninguna)', 'ok': ok,
-                  'latencia_s': round(seg, 1)})
-    print(f"abstencion      | usadas={','.join(usadas) or '-':<45} | ok={ok} | {seg:.1f}s")
-    print('Respuesta al caso sin datos:', resp[:300])
+    if tipo == 'tool':
+        ok = esperada in usadas
+    elif tipo == 'mezcla':
+        # En Deterministic el host solo ejecuta la tool inferida (no hay
+        # encadenamiento): se registra esa conducta, no un fallo.
+        ok = (sum(t in usadas for t in esperada) == len(esperada)
+              if modo != 'Deterministic' else len(usadas) == 1)
+    else:  # abstencion: la respuesta correcta NO usa ninguna herramienta
+        ok = len(usadas) == 0
+    return {'tipo': tipo, 'ref': ref, 'modo': modo,
+            'usadas': ','.join(usadas) or '(ninguna)', 'ok': ok,
+            'latencia_s': round(seg, 1), 'resp': resp}
+
+async def correr_bateria():
+    # Orden de la bateria (estrategia de ejecucion):
+    #   CATEGORIA tool: herramienta -> consulta -> modo
+    #   CATEGORIA todas_las_tools: mezcla -> modo
+    #   CATEGORIA sin_datos: modo
+    filas = []
+    print('CATEGORIA tool — 3 consultas x 3 modos por cada herramienta')
+    for herramienta, consultas in VALIDACION:
+        print(f'== {herramienta} ==')
+        for n, consulta in enumerate(consultas, 1):
+            for modo in MODOS:
+                f = await validar_caso('tool', herramienta, consulta, modo, herramienta)
+                f['caso'] = n
+                filas.append(f)
+                print(f"  caso {n} [{modo:<13}] usadas={f['usadas']:<45} ok={f['ok']} {f['latencia_s']}s")
+    print('CATEGORIA todas_las_tools — 2 mezclas x 3 modos')
+    for n, (consulta, esperadas) in enumerate(MEZCLAS, 1):
+        for modo in MODOS:
+            f = await validar_caso('mezcla', f'mezcla {n}', consulta, modo, esperadas)
+            f['caso'] = n
+            filas.append(f)
+            print(f"  mezcla {n} [{modo:<13}] usadas={f['usadas']:<70} ok={f['ok']} {f['latencia_s']}s")
+    print('CATEGORIA sin_datos — el agente debe abstenerse (3 modos)')
+    for modo in MODOS:
+        f = await validar_caso('abstencion', 'sin datos', SIN_DATOS, modo, None)
+        filas.append(f)
+        print(f"  [{modo:<13}] usadas={f['usadas']:<45} ok={f['ok']} {f['latencia_s']}s")
+    print('Respuesta (Guided) al caso sin datos:')
+    print(next(f['resp'] for f in filas if f['tipo'] == 'abstencion' and f['modo'] == 'Guided')[:400])
     return filas
 
 filas_bateria = await correr_bateria()
 """)
 
 md(r"""
-**Observación (corrida real).** POR LLENAR — resultado turno a turno de la batería: las 9 herramientas con sus 3 casos, las 2 mezclas y el caso sin datos, con las latencias.
+**Observación (corrida real).** POR LLENAR — resultado turno a turno de la batería: las 9 herramientas con sus 3 casos x 3 modos (categoría `tool`), las 2 mezclas x 3 modos (categoría `todas_las_tools`) y el caso sin datos x 3 modos (categoría `sin_datos`), con las latencias.
 """)
 
 code(r"""
-# Resumen de la batería: acierto por herramienta tipo (tool / mezcla / abstencion).
+# Resumen de la batería: acierto por (categoria, herramienta, modo).
 resumen_bateria = (
     pd.DataFrame(filas_bateria)
-    .groupby(['tipo', 'ref'])
+    .groupby(['tipo', 'ref', 'modo'])
     .agg(aciertos=('ok', 'sum'), casos=('ok', 'count'),
          acierto_pct=('ok', lambda s: round(100 * s.mean(), 1)),
          latencia_media_s=('latencia_s', 'mean'))
