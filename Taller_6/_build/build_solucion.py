@@ -373,7 +373,7 @@ candidate_dirs = [
 SERVERS_DIR = next((p for p in candidate_dirs if p.exists()), None)
 if SERVERS_DIR is None:
     raise FileNotFoundError(
-        'No se encontró mcp_servers. En Colab, ejecute primero la celda de bootstrap.'
+        'No se encontró mcp_servers. En Colab debe correrse primero la celda de bootstrap; en local, esta celda corre desde la carpeta del taller.'
     )
 
 recetas_server = SERVERS_DIR / 'recetas_mcp_server.py'
@@ -523,6 +523,8 @@ El chatbot conserva los tres modos del notebook guía, pero la selección de her
 - **Autonomous**: el agente decide libremente qué herramienta usar (o ninguna).
 - **Guided** (por defecto): un mensaje de sistema le prioriza la herramienta sugerida por la heurística del host y pide citar fuentes.
 - **Deterministic**: el host ejecuta la herramienta directamente y el LLM solo redacta la respuesta final con el resultado; modo sin sorpresas, ideal para la demo.
+
+**Nota sobre la heurística y los modos**: la heurística del host vive en la celda siguiente y los modos la usan de forma distinta — en Guided la convierte en instrucción para el agente, en Deterministic la ejecuta directamente el host sin llamar al agente, y en Autonomous no se aplica en absoluto (el agente decide libremente). Por eso la comparación de modos de la sección 9 es, en sí misma, el test de si la guía del host aporta valor frente a dejar decidir al LLM.
 
 **Garantía mecánica de fuentes**: la línea de "Fuentes:" no depende de que el LLM la redacte bien (en las dos corridas anteriores salió vacía o sin URL cuando el modelo olvidaba copiarla). Al cierre de cada turno, el host `componer_fuentes()` quita las líneas "Fuentes:" que pudo escribir el modelo y anexa una canónica: **las URLs reales** de las salidas de las herramientas cuando las trae; si ninguna trae URL, **la lista de herramientas MCP utilizadas y su servidor**; y si el turno no usó herramientas, el aviso explícito de que fue una respuesta sin base documental. Así, cada respuesta indica si su información proviene de una página, de un servidor o de la memoria del modelo.
 """)
@@ -771,15 +773,19 @@ async def responder(pregunta, modo='Guided', preferida='Auto', historial=None,
 # Ejemplos
 # ==========================================================================
 md(r"""
-## 8. Demostración del chatbot: cinco consultas de extremo a extremo
+## 8. Demostración por categoría y modo: cinco consultas de extremo a extremo
 
-Antes de la interfaz, se valida el flujo completo en consola con cinco consultas representativas, una por comportamiento esperado:
+Con las herramientas del protocolo descritas y el agente creado, se valida el flujo completo en consola con cinco consultas representativas — una por comportamiento esperado del asistente, cada una rotulada con su categoría de pregunta, las tools y servidores que debe activar, y el modo de ejecución:
 
-1. **Sólo documentos**: pedir cómo preparar un plato — debe responder citando la receta y su URL de origen.
-2. **Cadena de tools** (el caso fuerte de MCP): encontrar una receta y, sobre ella, un cálculo — el agente debe encadenar herramientas de los **dos servidores distintos**.
-3. **Sólo cálculo**: una conversión de unidades — respuesta exacta, sin alucinación posible.
-4. **Datos de consulta (SQLite)**: si un ingrediente es apto para alérgicos — la base complementa la respuesta con el grupo de alergenos orientativo.
-5. **API viva**: un producto por su código de barras — dato real de OpenFoodFacts; si el servicio no responde, la tool contesta desde la caché local rotulada y la conversación no se detiene.
+| N.º | Categoría de pregunta | Tool(s) esperadas (servidor) | Modo | Propósito |
+| --- | --- | --- | --- | --- |
+| 1 | documentos | `buscar_recetas` (RecetasDocMCP, JSON) | Guided | documentos con cita de la fuente |
+| 2 | cadena de tools | `buscar_recetas` + `calcular_kcal` (2 servidores) | Guided | el caso fuerte de MCP: encadenamiento |
+| 3 | cálculo | `convertir_volumen` (CocinaUtilsMCP) | Deterministic | respuesta exacta, sin alucinación |
+| 4 | datos (SQLite) | `consultar_alergias` (DatosCocinaMCP) | Guided | la base complementa la respuesta |
+| 5 | API viva | `info_producto_api` (AlimentosAPIMCP) | Deterministic | dato real por código de barras, con caché de respaldo |
+
+Tras estas cinco consultas, la subsección 8.1 verifica unidad por unidad (las 9 tools, en los 3 modos) antes del experimento comparativo de modos (sección 9).
 """)
 
 code(r"""
@@ -848,7 +854,7 @@ md(r"""
 """)
 
 md(r"""
-### 8.1 Batería de validación de las herramientas: 27 consultas + 2 mezclas + 1 caso sin datos
+### 8.1 Batería de validación de las 9 herramientas: por categoría de pregunta y modo de ejecución (90 turnos)
 
 Esta subsección documenta el **chequeo de correcto funcionamiento del protocolo con las nueve herramientas y los cuatro servidores**, con el orden de ejecución fijado en dos niveles: **por categoría de pregunta** (cada una con su tool) y, dentro de cada consulta, **por estrategia o modo de ejecución del agente** (Guided, Autonomous, Deterministic):
 
@@ -1001,7 +1007,7 @@ md(r"""
 md(r"""
 ## 9. Experimento: ¿qué modo de ejecución conviene?
 
-Los tres modos encarnan una hipótesis distinta sobre el protocolo: *el agente puede decidir* (Autonomous), *le basta una guía* (Guided) o *no conviene decidirle* (Deterministic). El experimento las confronta con un conjunto fijo de 13 consultas en cinco categorías, que cubren los cuatro servidores:
+Con cada herramienta validada unidad por unidad y en cadena (subsección 8.1), la pregunta siguiente es de diseño: ¿cuál de los tres modos conviene para dar servicio? Los tres modos encarnan una hipótesis distinta sobre el protocolo: *el agente puede decidir* (Autonomous), *le basta una guía* (Guided) o *no conviene decidirle* (Deterministic). El experimento las confronta con un conjunto fijo de 13 consultas en cinco categorías, que cubren los cuatro servidores; el orden de ejecución es modo → categoría → consulta:
 
 - `documentos`: 4 consultas que deben disparar `buscar_recetas` (o `leer_receta`).
 - `calculo`: 3 consultas que deben disparar una tool de cocina (`convertir_volumen`, `escalar_cantidad` o `calcular_kcal`).
@@ -1105,7 +1111,7 @@ md(r"""
 md(r"""
 ## 10. De la consola a la interfaz: el chatbot con Gradio
 
-El mismo agente, montado en una interfaz de chat con Gradio, en la línea del notebook guía. El único control funcional es el selector de herramienta: todo lo demás se infiere del mensaje. La traza MCP puede mostrarse debajo de cada respuesta para que la demo evidencie qué servidor respondió.
+El mismo agente, montado en una interfaz de chat con Gradio, en la línea del notebook guía. Los controles funcionales son tres — el modo de ejecución, la tool preferida (para forzarla cuando la selección automática fallase) y la opción de mostrar la traza MCP — y todo lo demás (a qué servidor pertenece la pregunta) se infiere del mensaje con la heurística del host. La traza MCP debajo de cada respuesta es la evidencia en pantalla de qué servidor respondió.
 """)
 
 code(r"""
