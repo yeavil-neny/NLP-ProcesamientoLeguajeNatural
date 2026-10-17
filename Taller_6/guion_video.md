@@ -10,6 +10,14 @@ Entregable del taller: video de máximo 2 minutos que muestre (1) la ejecución 
 4. Herramienta de grabación: grabador de pantalla (por ejemplo, el de Windows u OBS) a 1080p con el zoom del navegador al 100 por ciento o más, para que las URLs de las fuentes se lean con claridad.
 5. Decidir dónde queda el video: subirlo al OneDrive institucional (con "cualquiera con el enlace" marcado) o cargarlo como adjunto en Intu.
 
+## Avisos de la corrida real (leer antes de grabar)
+
+La corrida completa del notebook en Colab mostró tres comportamientos que conviene manejar durante la grabación:
+
+1. **El primer turno puede tardar ~90 s** (fue de 88.4 s: carga fría de Ollama más el arranque de la sesión MCP). Calentar el sistema antes de grabar: después del Run All, hacer una consulta en la interfaz y descartarla, de modo que el primer turno grabado ya responda en pocos segundos.
+2. **La línea de "Fuentes:" a veces sale vacía** con este modelo de 3 B: en las tres demostraciones de la corrida la redacción no incluyó la URL. Si la respuesta grabada no trae la URL, repetir la pregunta (o reformularla levemente) hasta que la citación aparezca: la referencia legible es el requisito central del video.
+3. **Verificar la cifra de kcal en pantalla**: en la corrida el encadenamiento entre servidores sí se produjo (traza con `buscar_recetas` + `calcular_kcal`), pero la redacción final omitió la cifra. Si ocurre, repetir la interacción o elegir una pregunta de conversión (modo más robusto: el resultado exacto llega en la salida de la tool).
+
 ## Estructura sugerida de la grabación (2 minutos)
 
 | Minuto | Acción | Qué decir (o equivalente con otras palabras) |
@@ -26,6 +34,7 @@ Entregable del taller: video de máximo 2 minutos que muestre (1) la ejecución 
 - [ ] Al menos dos preguntas respondidas dentro de la interfaz.
 - [ ] Al menos una respuesta en la que la línea de "Fuentes:" (título y URL de la receta) se lea claramente en pantalla.
 - [ ] La traza MCP visible en al menos una respuesta, evidenciando la (o las) herramientas invocadas.
+- [ ] Si la primera respuesta no trae la línea de "Fuentes:" con URL, se repitió la pregunta hasta lograrlo.
 - [ ] Duración no mayor a 2 minutos.
 
 ## Al terminar
