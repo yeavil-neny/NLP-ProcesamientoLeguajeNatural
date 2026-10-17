@@ -862,7 +862,7 @@ Esta subsección documenta el **chequeo de correcto funcionamiento del protocolo
 - **Categoría `todas_las_tools`**: 2 consultas mezcla que cruzan varias tools y varios servidores en un solo turno — cada mezcla corre en los 3 modos (6 turnos). En Guided y Autonomous el chequeo pasa si la cadena completa de tools se produjo; en Deterministic el host solo ejecuta la tool inferida (se registra esa conducta, no un fallo).
 - **Categoría `sin_datos`**: 1 consulta con información que no existe ni en el corpus ni en las tools, en los 3 modos (3 turnos) — la expectativa correcta es que el agente **no invoque ninguna herramienta** y admita que no puede responder (reproducción honesta del riesgo de alucinacion que MCP evita cuando la herramienta sí responde).
 
-Total de la batería: **90 turnos**. Cada turno se registra con su modo, tool usada, el resultado del chequeo y la latencia; el resumen al final agrega el acierto por (categoría, herramienta, modo).
+Total de la batería: **90 turnos**. A petición del equipo, **cada turno se imprime completo** — el encabezado `[modo] tools=... (latencia)`, la respuesta final del asistente y su línea de "Fuentes" garantizada — para que la entrega permita analizar salida y referencia pregunta por pregunta (como en las demostraciones de la sección 8); el chequeo y la latencia quedan en `filas` y se agregan en el resumen final.
 """)
 
 code(r"""
@@ -955,30 +955,33 @@ async def correr_bateria():
     #   CATEGORIA tool: herramienta -> consulta -> modo
     #   CATEGORIA todas_las_tools: mezcla -> modo
     #   CATEGORIA sin_datos: modo
+    # Cada turno se imprime COMPLETO (respuesta + Fuentes garantizada) para
+    # que la entrega sea analizable pregunta por pregunta.
     filas = []
     print('CATEGORIA tool — 3 consultas x 3 modos por cada herramienta')
     for herramienta, consultas in VALIDACION:
-        print(f'== {herramienta} ==')
+        print(f'\n== {herramienta} ==')
         for n, consulta in enumerate(consultas, 1):
             for modo in MODOS:
                 f = await validar_caso('tool', herramienta, consulta, modo, herramienta)
                 f['caso'] = n
                 filas.append(f)
-                print(f"  caso {n} [{modo:<13}] usadas={f['usadas']:<45} ok={f['ok']} {f['latencia_s']}s")
-    print('CATEGORIA todas_las_tools — 2 mezclas x 3 modos')
+                print(f"\n  caso {n} [{f['modo']}] tools={f['usadas']} ({f['latencia_s']:.1f} s)")
+                print(f['resp'])
+    print('\nCATEGORIA todas_las_tools — 2 mezclas x 3 modos')
     for n, (consulta, esperadas) in enumerate(MEZCLAS, 1):
         for modo in MODOS:
             f = await validar_caso('mezcla', f'mezcla {n}', consulta, modo, esperadas)
             f['caso'] = n
             filas.append(f)
-            print(f"  mezcla {n} [{modo:<13}] usadas={f['usadas']:<70} ok={f['ok']} {f['latencia_s']}s")
-    print('CATEGORIA sin_datos — el agente debe abstenerse (3 modos)')
+            print(f"\n  mezcla {n} [{f['modo']}] tools={f['usadas']} ({f['latencia_s']:.1f} s)")
+            print(f['resp'])
+    print('\nCATEGORIA sin_datos — el agente debe abstenerse (3 modos)')
     for modo in MODOS:
         f = await validar_caso('abstencion', 'sin datos', SIN_DATOS, modo, None)
         filas.append(f)
-        print(f"  [{modo:<13}] usadas={f['usadas']:<45} ok={f['ok']} {f['latencia_s']}s")
-    print('Respuesta (Guided) al caso sin datos:')
-    print(next(f['resp'] for f in filas if f['tipo'] == 'abstencion' and f['modo'] == 'Guided')[:400])
+        print(f"\n  [{f['modo']}] tools={f['usadas']} ({f['latencia_s']:.1f} s)")
+        print(f['resp'])
     return filas
 
 filas_bateria = await correr_bateria()
