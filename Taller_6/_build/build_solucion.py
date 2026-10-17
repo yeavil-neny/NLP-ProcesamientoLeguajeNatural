@@ -81,7 +81,7 @@ Frente a los notebooks guía (que consumen los servidores de ejemplo `weather` y
 3. **Dos fuentes complementarias en el mismo problema de negocio, cada una de un tipo distinto**: una base de datos real **SQLite** con datos sintéticos honestos (kcal por 100 g, alergenos orientativos de los 9 grupos mayores de la FDA y la nevera del usuario, todos en modo solo lectura) y una **API viva de terceros** (OpenFoodFacts, sin llave) con respaldo en caché para que la corrida nunca se detenga — archivos+SQL+API, las tres formas de conectividad MCP.
 4. **Arranque automático y robusto de la infraestructura**: `ollama serve` y los cuatro servidores se lanzan desde el notebook y se esperan con sondeos de salud por puerto, frente al arranque manual pedido en las guías.
 5. **Un experimento dirigido de 39 turnos (13 consultas x 3 modos)** con métricas de acierto en la selección de tool, de referencias y de latencia, más gráficos comparativos; y una **batería de validación de las 9 herramientas en 90 turnos** (categoría `tool`: 27 consultas x 3 modos; categoría `todas_las_tools`: 2 mezclas x 3 modos; categoría `sin_datos`: 1 caso x 3 modos), ordenada por categoría de pregunta, tool y modo de ejecución: la guía no hace experimentación ni validación.
-6. **Un análisis cualitativo de los fallos**, tanto de las demostraciones (sección 8) como de los turnos fallidos del experimento (sección 9), con sus causas: fallo de invocación, redacción que pierde datos y aritmética que sustituye al resultado de la tool.
+6. **Un análisis cualitativo de los fallos**, tanto de la batería de validación (sección 8) como de los turnos fallidos del experimento (sección 9), con sus causas: fallo de invocación, redacción que pierde datos y aritmética que sustituye al resultado de la tool.
 7. **La traza MCP visible en la interfaz**: cada respuesta de Gradio muestra el modo, las tools invocadas y la latencia; es la evidencia en pantalla de que el agente consumió los servidores.
 """)
 
@@ -190,7 +190,7 @@ for col, n in nulls.items():
 """)
 
 md(r"""
-**Observación (corrida real).** POR LLENAR — completitud de campos citables (id, nombre, url, ingredientes y pasos completos; metadatos descriptivos con nulos alrededor del 30%) y su consecuencia: la curación debe descartar registros sin URL, porque sin fuente no hay cita verificable para el video.
+**Observación (corrida real).** Los campos con los que el servidor construye las citas (`id`, `nombre`, `url`) y el contenido técnico (`ingredientes`, `pasos`) llegaron al 100% en las 20.236 recetas crudas, mientras que los metadatos descriptivos concentran los nulos alrededor del 30% (`pais` 27.6%, `duracion` 32.8%, `categoria` 33.3%, `comensales` 32.7%, `dificultad` 31.9%). Consecuencia: la curación puede exigir URL sin perder contenido útil, porque sin fuente no hay cita verificable para el video, y el chatbot no puede prometer atributos (país, duración) que en un tercio del corpus no existen.
 """)
 
 code(r"""
@@ -211,7 +211,7 @@ plt.show()
 """)
 
 md(r"""
-**Observación (corrida real).** POR LLENAR — desbalance por país (España domina con ~9.500 recetas; México, Perú y Colombia le siguen) y duración típica de las recetas; la consecuencia práctica es que las citas del chatbot provendrán sobre todo de webs gastronómicas de España y México.
+**Observación (corrida real).** El desbalance por país quedó confirmado y es fuerte: España domina con algo más de 9.000 recetas (cerca de la mitad del corpus), seguida de México (~2.100) y Perú (~1.100); los demás países quedan por debajo de los 500 registros y Colombia no llega a los 250. En duraciones, casi todo el corpus declara tiempos inferiores a una hora, con la mayor concentración entre los 10 y los 20 minutos y una cola aislada que llega a unos 490 minutos. Consecuencia práctica: las citas del chatbot provendrán sobre todo de webs gastronómicas de España y México.
 """)
 
 md(r"""
@@ -239,7 +239,7 @@ print(f'Recetas después de la curación: {len(df)} '
 """)
 
 md(r"""
-**Observación (corrida real).** POR LLENAR — recetas resultantes tras la curación (~19.249 esperadas) y su comparación con el Taller 5: misma cifra, porque la curación es idéntica.
+**Observación (corrida real).** La curación conservó 19.249 de las 20.236 recetas crudas (987 eliminadas, 4.9%), la misma cifra exacta del Taller 5 y de las corridas previas de este notebook: el paso es reproducible entre talleres y entre corridas. El corpus serializado quedó en `mcp_servers/recetas_corpus.json` con 19.249 recetas y 34.0 MB; la siembra SQLite complementaria dejó 58 alimentos, 40 filas de alergenos y 6 ingredientes de la nevera.
 """)
 
 code(r"""
@@ -773,96 +773,23 @@ async def responder(pregunta, modo='Guided', preferida='Auto', historial=None,
 # Ejemplos
 # ==========================================================================
 md(r"""
-## 8. Demostración por categoría y modo: cinco consultas de extremo a extremo
+## 8. Validación del asistente por categoría de pregunta, herramienta y modo de ejecución (90 turnos)
 
-Con las herramientas del protocolo descritas y el agente creado, se valida el flujo completo en consola con cinco consultas representativas — una por comportamiento esperado del asistente, cada una rotulada con su categoría de pregunta, las tools y servidores que debe activar, y el modo de ejecución:
+Con las herramientas del protocolo descritas y el agente creado, esta única sección valida el funcionamiento de la solución con el doble orden que fija la estrategia de ejecución: **por categoría de pregunta** (cada una con su tool y su servidor) y, dentro de cada consulta, **por estrategia o modo de ejecución del agente** (Guided, Autonomous, Deterministic). Cada caso corre una sola vez — sin consultas repetidas — y cada turno imprime su salida completa (encabezado, tools usadas y latencia, respuesta final del asistente y línea de "Fuentes" garantizada por el host) para que la entrega sea analizable pregunta por pregunta.
 
-| N.º | Categoría de pregunta | Tool(s) esperadas (servidor) | Modo | Propósito |
-| --- | --- | --- | --- | --- |
-| 1 | documentos | `buscar_recetas` (RecetasDocMCP, JSON) | Guided | documentos con cita de la fuente |
-| 2 | cadena de tools | `buscar_recetas` + `calcular_kcal` (2 servidores) | Guided | el caso fuerte de MCP: encadenamiento |
-| 3 | cálculo | `convertir_volumen` (CocinaUtilsMCP) | Deterministic | respuesta exacta, sin alucinación |
-| 4 | datos (SQLite) | `consultar_alergias` (DatosCocinaMCP) | Guided | la base complementa la respuesta |
-| 5 | API viva | `info_producto_api` (AlimentosAPIMCP) | Deterministic | dato real por código de barras, con caché de respaldo |
+- **Categoría `tool`** (81 turnos): para cada una de las 9 tools se plantean **3 consultas**, y cada consulta corre en los 3 modos. El chequeo pasa si la tool esperada es la invocada. Las 9 tools cubren los cuatro comportamientos de negocio del asistente:
 
-Tras estas cinco consultas, la subsección 8.1 verifica unidad por unidad (las 9 tools, en los 3 modos) antes del experimento comparativo de modos (sección 9).
-""")
+| Comportamiento | Tools (servidor) |
+| --- | --- |
+| documentos con cita de la fuente | `buscar_recetas`, `leer_receta` (RecetasDocMCP, JSON) |
+| cálculo exacto de cocina | `convertir_volumen`, `escalar_cantidad`, `calcular_kcal` (CocinaUtilsMCP) |
+| datos de consulta complementarios | `consultar_calorias`, `consultar_alergias`, `consultar_inventario` (DatosCocinaMCP, SQLite) |
+| producto envasado por API viva | `info_producto_api` (AlimentosAPIMCP, OpenFoodFacts) |
 
-code(r"""
-# Ejemplo 1: consulta de documentos. El agente deberia llamar a buscar_recetas
-# y, si conviene, a leer_receta, y responder con la URL de la fuente.
-pregunta_1 = '¿Cómo preparo arepas de queso? Cita la receta que uses.'
-resp, traza, seg = await responder(pregunta_1, modo='Guided')
-print(f'[{traza["modo"]}] tools={traza["tools_usadas"]} ({seg:.1f} s)\n')
-print(resp)
-""")
+- **Categoría `todas_las_tools`** (6 turnos): 2 consultas mezcla que cruzan varias tools y varios servidores en un solo turno; cada mezcla corre en los 3 modos. En Guided y Autonomous el chequeo pasa si la cadena completa de tools se produjo; en Deterministic el host solo ejecuta la tool inferida (se registra esa conducta, no un fallo).
+- **Categoría `sin_datos`** (3 turnos): 1 consulta con información que no existe ni en el corpus ni en las tools, en los 3 modos — la expectativa correcta es que el agente **no invoque ninguna herramienta** y admita que no puede responder (reproducción honesta del riesgo de alucinacion que MCP evita cuando la herramienta sí responde).
 
-md(r"""
-**Observación (corrida real).** POR LLENAR — respuesta obtenida, herramienta(s) invocada(s) y latencia; la respuesta debe incluir la línea de "Fuentes:" con la URL de la receta.
-""")
-
-code(r"""
-# Ejemplo 2: cadena entre servidores. Requiere documentos (buscar/leer) y
-# calculo (calcular_kcal), que viven en servidores MCP distintos.
-pregunta_2 = 'Busca una receta de guacamole y dime cuántas kcal aproximadas aportan 200 gramos de aguacate.'
-resp, traza, seg = await responder(pregunta_2, modo='Guided')
-print(f'[{traza["modo"]}] tools={traza["tools_usadas"]} ({seg:.1f} s)\n')
-print(resp)
-""")
-
-md(r"""
-**Observación (corrida real).** POR LLENAR — evidencia del encadenamiento inter-servidores (tools usadas, si invocó las dos, y la consistencia de la cifra de kcal con la tabla del servidor de cocina).
-""")
-
-code(r"""
-# Ejemplo 3: solo calculo. La respuesta deberia ser exacta (480 ml) porque
-# proviene de la tabla del servidor, no de la memoria del LLM.
-pregunta_3 = '¿Cuántos mililitros son 2 tazas?'
-resp, traza, seg = await responder(pregunta_3, modo='Deterministic')
-print(f'[{traza["modo"]}] tools={traza["tools_usadas"]} ({seg:.1f} s)\n')
-print(resp)
-""")
-
-md(r"""
-**Observación (corrida real).** POR LLENAR — la respuesta exacta y el ahorro: ni el LLM ni el agente intervinieron en la aritmética.
-""")
-
-code(r"""
-# Ejemplo 4: consulta de datos (SQLite, solo lectura). La base complementa la
-# respuesta con el grupo de alergenos orientativo del ingrediente.
-pregunta_4 = '¿La pasta es apta para alguien alérgico al gluten?'
-resp, traza, seg = await responder(pregunta_4, modo='Guided')
-print(f'[{traza["modo"]}] tools={traza["tools_usadas"]} ({seg:.1f} s)\n')
-print(resp)
-""")
-
-md(r"""
-**Observación (corrida real).** POR LLENAR — la tool de datos invocada (`consultar_alergias`), el grupo señalado (trigo/gluten) y el rotulo de referencia orientativa, no diagnóstico.
-""")
-
-code(r"""
-# Ejemplo 5: API viva por codigo de barras (producto de marca). Dato real;
-# si el servicio no responde, la tool responde desde el cache rotulado.
-pregunta_5 = 'Consulta el producto con código de barras 3017620422003 y dime sus kcal por 100 g.'
-resp, traza, seg = await responder(pregunta_5, modo='Deterministic')
-print(f'[{traza["modo"]}] tools={traza["tools_usadas"]} ({seg:.1f} s)\n')
-print(resp)
-""")
-
-md(r"""
-**Observación (corrida real).** POR LLENAR — el dato retornado (en vivo o desde la cache, con su rotulo) y la coherencia de la cifra con la corrida.
-""")
-
-md(r"""
-### 8.1 Batería de validación de las 9 herramientas: por categoría de pregunta y modo de ejecución (90 turnos)
-
-Esta subsección documenta el **chequeo de correcto funcionamiento del protocolo con las nueve herramientas y los cuatro servidores**, con el orden de ejecución fijado en dos niveles: **por categoría de pregunta** (cada una con su tool) y, dentro de cada consulta, **por estrategia o modo de ejecución del agente** (Guided, Autonomous, Deterministic):
-
-- **Categoría `tool`**: para cada una de las 9 tools se plantean **3 consultas**, y cada consulta corre en los 3 modos (81 turnos). El chequeo pasa si la tool esperada es la invocada.
-- **Categoría `todas_las_tools`**: 2 consultas mezcla que cruzan varias tools y varios servidores en un solo turno — cada mezcla corre en los 3 modos (6 turnos). En Guided y Autonomous el chequeo pasa si la cadena completa de tools se produjo; en Deterministic el host solo ejecuta la tool inferida (se registra esa conducta, no un fallo).
-- **Categoría `sin_datos`**: 1 consulta con información que no existe ni en el corpus ni en las tools, en los 3 modos (3 turnos) — la expectativa correcta es que el agente **no invoque ninguna herramienta** y admita que no puede responder (reproducción honesta del riesgo de alucinacion que MCP evita cuando la herramienta sí responde).
-
-Total de la batería: **90 turnos**. A petición del equipo, **cada turno se imprime completo** — el encabezado `[modo] tools=... (latencia)`, la respuesta final del asistente y su línea de "Fuentes" garantizada — para que la entrega permita analizar salida y referencia pregunta por pregunta (como en las demostraciones de la sección 8); el chequeo y la latencia quedan en `filas` y se agregan en el resumen final.
+Total de la batería: **90 turnos**. El chequeo y la latencia quedan en `filas_bateria` y se agregan en las tablas de resumen del final.
 """)
 
 code(r"""
@@ -1014,7 +941,7 @@ md(r"""
 md(r"""
 ## 9. Experimento: ¿qué modo de ejecución conviene?
 
-Con cada herramienta validada unidad por unidad y en cadena (subsección 8.1), la pregunta siguiente es de diseño: ¿cuál de los tres modos conviene para dar servicio? Los tres modos encarnan una hipótesis distinta sobre el protocolo: *el agente puede decidir* (Autonomous), *le basta una guía* (Guided) o *no conviene decidirle* (Deterministic). El experimento las confronta con un conjunto fijo de 13 consultas en cinco categorías, que cubren los cuatro servidores; el orden de ejecución es modo → categoría → consulta:
+Con cada herramienta validada unidad por unidad y en cadena (sección 8), la pregunta siguiente es de diseño: ¿cuál de los tres modos conviene para dar servicio? Los tres modos encarnan una hipótesis distinta sobre el protocolo: *el agente puede decidir* (Autonomous), *le basta una guía* (Guided) o *no conviene decidirle* (Deterministic). El experimento las confronta con un conjunto fijo de 13 consultas en cinco categorías, que cubren los cuatro servidores; el orden de ejecución es modo → categoría → consulta:
 
 - `documentos`: 4 consultas que deben disparar `buscar_recetas` (o `leer_receta`).
 - `calculo`: 3 consultas que deben disparar una tool de cocina (`convertir_volumen`, `escalar_cantidad` o `calcular_kcal`).
@@ -1030,18 +957,19 @@ code(r"""
 from itertools import product
 
 CASOS = [
-    # (consulta, categoria, tool_esperada)
+    # (consulta, categoria, tool_esperada) — sin repetir consultas de la
+    # bateria de la seccion 8: cada caso corre una sola vez en el notebook.
     ('¿Cómo se prepara el ajiaco santafereño?', 'documentos', 'buscar_recetas'),
-    ('Dame una receta de ceviche de pescado.', 'documentos', 'buscar_recetas'),
-    ('¿Qué ingredientes lleva el sancocho de gallina?', 'documentos', 'buscar_recetas'),
+    ('Dame una receta de pozole rojo mexicano.', 'documentos', 'buscar_recetas'),
+    ('¿Qué lleva el lomo saltado peruano?', 'documentos', 'buscar_recetas'),
     ('Encuentra una receta de tortilla de patatas y dime su fuente.', 'documentos', 'buscar_recetas'),
-    ('¿Cuántos ml hay en 3 tazas?', 'calculo', 'convertir_volumen'),
-    ('¿Cuántas kcal tienen 150 gramos de queso?', 'calculo', 'calcular_kcal'),
-    ('Escala 500 gramos de masa para 8 comensales si la receta original dice 500 gramos.', 'calculo', 'escalar_cantidad'),
-    ('¿Cuántas kcal por 100 gramos tienen el arroz?', 'datos', 'consultar_calorias'),
-    ('¿La pasta es apta para alguien alérgico al gluten?', 'datos', 'consultar_alergias'),
-    ('¿Qué tengo en la nevera?', 'datos', 'consultar_inventario'),
-    ('Consulta el producto con código de barras 3017620422003 en OpenFoodFacts.', 'api', 'info_producto_api'),
+    ('¿Cuántos ml hay en 4 tazas?', 'calculo', 'convertir_volumen'),
+    ('¿Cuántas kcal tienen 120 gramos de atún?', 'calculo', 'calcular_kcal'),
+    ('Escala 400 gramos de pasta para 6 comensales si la receta original dice 400 gramos.', 'calculo', 'escalar_cantidad'),
+    ('¿Cuántas kcal por 100 gramos tiene el aguacate?', 'datos', 'consultar_calorias'),
+    ('¿El salmon es apto para alguien alérgico?', 'datos', 'consultar_alergias'),
+    ('¿Hay leche en la nevera?', 'datos', 'consultar_inventario'),
+    ('Consulta en la API el producto con código de barras 737628064502.', 'api', 'info_producto_api'),
     ('Hola, ¿qué puedes hacer?', 'general', None),
     ('Gracias, hasta luego.', 'general', None),
 ]
