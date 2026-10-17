@@ -47,17 +47,18 @@ El remoto (GitHub, `main`) es la fuente de verdad de todas las entregas.
 | --- | --- |
 | `b08bc19` (crispesdeep, 2 servidores) | Corrida válida: 27 turnos, 23/27 aciertos; Deterministic 100%/2.6 s; citación débil (Fuentes vacías/473.2) |
 | `8b4215b` (Yenny, 4 servidores) | **Corrida invalidada**: en runtime fresco, `ollama pull` corrió antes de `ollama serve`; el modelo no se descargó y 19 turnos con LLM devolvieron 404. La parte MCP funcionó completa. **Fix en `5228b50`**: orden instala → sirve → pull condicionado a `ollama list` |
-| `292d725` (Yenny, válida) | 39 turnos, 37/39 (94.9%); Deterministic 100%/2.2 s; batería aún no existía |
-| **`ac3077f` (Fredy, final)** | **4 servidores + batería 8.1 (90 turnos) + garantía de Fuentes. 0 errores en todo el notebook.** Sincronizada en `c6982cd` |
+| `292d725` (Yenny, válida) | 39 turnos, 37/39 (94.9%); Deterministic 100%/2.2 s; aún con 5 demos y batería por crear |
+| `ac3077f` (Fredy) | 4 servidores + batería 8.1 (90 turnos compacta) + garantía de Fuentes; 0 errores; sync en `c6982cd` |
+| **`586a5c1` (Yenny, FINAL)** | **Sección 8 fusionada (validación única de 90 turnos con salida completa y Fuentes garantizada por turno, sin consultas repetidas) + experimento con casos nuevos (sin duplicar la batería). 0 errores. Sincronizada en el commit del sync final (ver `git log`)** |
 
-### Cifras oficiales finales de la corrida `ac3077f`
+### Cifras oficiales finales de la corrida `586a5c1` (sección 8 fusionada)
 
-- **Batería de validación (categoría `tool`, 81 turnos)**: Deterministic **27/27 (100%)**, Guided 26/27, Autonomous 25/27. Las 9 herramientas funcionaron; los fallos de los modos con agente: `calcular_kcal` vs `consultar_calorias` ("Kcal de 100 gramos de arroz") y un caso donde Autonomous no invocó nada ("Lista mi inventario de cocina").
-- **Batería (categoría `todas_las_tools`, 6 turnos)**: la mezcla 1 en Guided fue el hallazgo estrella: **buscar_recetas + consultar_inventario + calcular_kcal encadenados en 3 servidores en 0.8 s**. En la mezcla 2 (5 tools), Guided alcanzó 2/5; Autonomous no completó cadenas; Deterministic ejecuta una sola tool (conducta registrada, no fallo).
-- **Batería (categoría `sin_datos`, 3 turnos)**: solo Deterministic se abstuvo; Guided y Autonomous llamaron `buscar_recetas` ante la consulta imposible (aunque el texto admitió no poder responder).
-- **Experimento de modos (39 turnos)**: 37/39 (94.9%); **Deterministic 100% (0.7 s, p90 1.5) — recomendado para la demo**; Guided 92.3% (0.8 s, p90 1.2 — el más rápido); Autonomous 92.3% (1.4 s, p90 2.7 — el más lento). Fallos: el saludo en Guided y Autonomous.
-- **Demostraciones**: arepas con **URL real en pantalla** (primera vez en 3 corridas — la garantía de fuentes); conversión con la anomalía del redactor **473.2 ml vs 480 de la tabla (tercera corrida consecutiva)**; Nutella 539 kcal conservada.
-- **Hallazgo de redacción reproducible**: el modelo de 3 B produce respuestas casi vacías con cierta frecuencia (2 de 5 demos); la garantía de fuentes rescató la cita en ambos casos; para cálculo puro la salida debe devolverse verbatim (queda en trabajo futuro).
+- **Batería de validación (sección 8 única, 90 turnos con salida completa y Fuentes garantizada por turno)**: 82/90 aciertos (91.1%). Categoría `tool` (81): **Deterministic 27/27 (100%)**, Guided 26/27, Autonomous 25/27 — mismo patrón estable de la corrida anterior; los fallos de los modos con agente: la confusión `calcular_kcal` vs `consultar_calorias` y un caso donde Autonomous no invocó nada.
+- **Categoría `todas_las_tools` (6 turnos)**: la mezcla 1 en Guided sigue siendo el hallazgo estrella: **buscar_recetas + consultar_inventario + calcular_kcal encadenados en 3 servidores en un solo turno**. En la mezcla 2 (5 tools), Guided alcanzó 2/5; Autonomous no completó cadenas; Deterministic ejecuta una sola tool (conducta registrada, no fallo).
+- **Categoría `sin_datos` (3 turnos)**: solo Deterministic se abstuvo; Guided y Autonomous llamaron `buscar_recetas`.
+- **La garantía de fuentes salió en el 100% de los turnos**: URL real en los 27 de documentos, herramienta + servidor en cálculo/datos/API y "sin base documental" en el turno sin herramientas. La anomalía de respuestas casi vacías (2 de 5 en la corrida previa) NO se reprodujo: es intermitente.
+- **Experimento de modos (39 turnos, casos nuevos sin duplicar la batería)**: 35/39 (89.7%); Guided 92.3% (2.4 s, p90 4.6), **Deterministic 92.3% (2.1 s, p90 5.1) — recomendado para la demo**, Autonomous 84.6% (4.1 s, p90 7.7). Dos hallazgos de diseño nuevos: (a) "¿Qué lleva el lomo saltado peruano?" no activa señales del host → Deterministic la rechaza honesta (Guided la resolvió con criterio libre del agente): la calidad de Deterministic es condición de las señales; (b) "120 gramos de atún" en Autonomous: confusión de tools parecidas. El saludo persiste sobre-disparando en Guided/Autonomous.
+- **Conclusión "dónde es más fuerte el MCP" (en las conclusiones del notebook)**: MCP domina en actos (cálculo exacto, SQL, API, extensibilidad de 2 a 4 servidores medida, citación garantizada por el host) y el RAG del Taller 5 sigue dominando en recuperación semántica (hit@1 0.60/MRR 0.625) y latencia de recuperación (30.3 ms); las comparaciones de latencia son honestas RELATIVAS entre modos (la sesión fría pagó hasta ~10 s en el primer turno).
 
 ## 4. Taller 3 — situación de la calificación (contexto para coordinar la respuesta del profesor)
 
