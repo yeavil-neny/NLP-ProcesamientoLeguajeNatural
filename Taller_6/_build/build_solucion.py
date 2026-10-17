@@ -867,6 +867,10 @@ Total de la batería: **90 turnos**. Cada turno se registra con su modo, tool us
 
 code(r"""
 # Bateria de validacion: 3 consultas por cada una de las 9 tools del caso.
+# La celda se autoabastece de MODOS (asi corren celdas sueltas sin haber
+# ejecutado antes la seccion 9 del experimento, donde tambien se define).
+MODOS = ['Guided', 'Autonomous', 'Deterministic']
+
 VALIDACION = [
     ('buscar_recetas', [
         '¿Cómo preparo arepas de queso? Cita la receta que uses.',
