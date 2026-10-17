@@ -1,0 +1,22 @@
+{
+  "fuente": "OpenFoodFacts (https://world.openfoodfacts.org/api/v2)",
+  "descripcion": "Instantanea del 17-oct-2026 para el respaldo (caché) del servidor api_alimentos. Sin llave. La herramienta usa esta copia cuando la API no responde.",
+  "productos": {
+    "3017620422003": {
+      "code": "3017620422003",
+      "name": "Nutella",
+      "brands": "Nutella, Ferrero",
+      "categories": "Confectionary based spreads, Petit-déjeuners, Produits à tartiner, Produits à tartiner sucrés, Pâtes à tartiner, fr:Goûter, fr:Nutella, fr:Nuttela",
+      "allergens": "milk, nuts, soybeans",
+      "kcal_100g": 539
+    },
+    "5449000000996": {
+      "code": "5449000000996",
+      "product_name": "Coca-Cola Original",
+      "brands": "COCA-COLA SERVICES SA/NV",
+      "categories": "Colas, pt:bebidas cafeína",
+      "allergens": "",
+      "kcal_100g": 42.4
+    }
+  }
+}
