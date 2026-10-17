@@ -80,7 +80,7 @@ Frente a los notebooks guía (que consumen los servidores de ejemplo `weather` y
 2. **Un corpus y un índice construidos por el taller**: 19.249 recetas curadas del Taller 5, serializadas a JSON y servidas mediante un índice invertido propio (pesos por campo, normalización sin tildes y tratamiento del plural) — un conjunto de datos nuevo respecto a la guía, que no consume dataset alguno.
 3. **Dos fuentes complementarias en el mismo problema de negocio, cada una de un tipo distinto**: una base de datos real **SQLite** con datos sintéticos honestos (kcal por 100 g, alergenos orientativos de los 9 grupos mayores de la FDA y la nevera del usuario, todos en modo solo lectura) y una **API viva de terceros** (OpenFoodFacts, sin llave) con respaldo en caché para que la corrida nunca se detenga — archivos+SQL+API, las tres formas de conectividad MCP.
 4. **Arranque automático y robusto de la infraestructura**: `ollama serve` y los cuatro servidores se lanzan desde el notebook y se esperan con sondeos de salud por puerto, frente al arranque manual pedido en las guías.
-5. **Un experimento dirigido de 39 turnos (13 consultas x 3 modos)** con métricas de acierto en la selección de tool, de referencias y de latencia, más gráficos comparativos: la guía no hace experimentación.
+5. **Un experimento dirigido de 39 turnos (13 consultas x 3 modos)** con métricas de acierto en la selección de tool, de referencias y de latencia, más gráficos comparativos; y una **batería de validación de las 9 herramientas** (27 consultas, 3 por herramienta, más 2 mezclas multi-servidor y un caso sin datos) que documenta el correcto funcionamiento de cada una: la guía no hace experimentación ni validación.
 6. **Un análisis cualitativo de los fallos**, tanto de las demostraciones (sección 8) como de los turnos fallidos del experimento (sección 9), con sus causas: fallo de invocación, redacción que pierde datos y aritmética que sustituye al resultado de la tool.
 7. **La traza MCP visible en la interfaz**: cada respuesta de Gradio muestra el modo, las tools invocadas y la latencia; es la evidencia en pantalla de que el agente consumió los servidores.
 """)
@@ -523,6 +523,8 @@ El chatbot conserva los tres modos del notebook guía, pero la selección de her
 - **Autonomous**: el agente decide libremente qué herramienta usar (o ninguna).
 - **Guided** (por defecto): un mensaje de sistema le prioriza la herramienta sugerida por la heurística del host y pide citar fuentes.
 - **Deterministic**: el host ejecuta la herramienta directamente y el LLM solo redacta la respuesta final con el resultado; modo sin sorpresas, ideal para la demo.
+
+**Garantía mecánica de fuentes**: la línea de "Fuentes:" no depende de que el LLM la redacte bien (en las dos corridas anteriores salió vacía o sin URL cuando el modelo olvidaba copiarla). Al cierre de cada turno, el host `componer_fuentes()` quita las líneas "Fuentes:" que pudo escribir el modelo y anexa una canónica: **las URLs reales** de las salidas de las herramientas cuando las trae; si ninguna trae URL, **la lista de herramientas MCP utilizadas y su servidor**; y si el turno no usó herramientas, el aviso explícito de que fue una respuesta sin base documental. Así, cada respuesta indica si su información proviene de una página, de un servidor o de la memoria del modelo.
 """)
 
 code(r'''
@@ -542,6 +544,7 @@ SENAL_DATOS = ['alergia', 'alergico', 'alergica', 'alergenos', 'intoleranc',
                'gluten', 'lactosa', 'frutos secos', 'mani', 'sesamo']
 SENAL_INV = ['inventario', 'nevera', 'refrigerador', 'en mi cocina']
 SENAL_API = ['openfoodfacts', 'codigo de barras', 'etiqueta', 'embotellado', 'envase']
+SENAL_LEER = ['identificador', 'receta completa', 'numero de receta', 'receta numero', 'contenido de la receta']
 
 def minusculas_sin_tildes(texto):
     """Minusculas sin tildes, para que las senales no dependan del acento."""
@@ -558,6 +561,8 @@ def detectar_tool(pregunta: str, preferida: str) -> str | None:
         return 'info_producto_api'
     if any(s in texto for s in SENAL_API):
         return 'info_producto_api'
+    if any(s in texto for s in SENAL_LEER):
+        return 'leer_receta'
     # 2) Datos SQLite: alergias, nevera o tabla de kcal por 100 g.
     if any(s in texto for s in SENAL_DATOS):
         return 'consultar_alergias'
@@ -610,6 +615,45 @@ def tools_usadas(messages):
     """Nombres de las herramientas que aparecieron en la conversacion."""
     return [getattr(m, 'name', '?') for m in messages if getattr(m, 'type', '') == 'tool']
 
+# De cada tool a la fuente que la sustenta (para la linea canonica de
+# Fuentes cuando la salida de la tool no trae URL).
+FUENTE_SERVIDOR = {
+    'buscar_recetas': 'RecetasDocMCP (archivo JSON con URL de origen)',
+    'leer_receta': 'RecetasDocMCP (archivo JSON con URL de origen)',
+    'convertir_volumen': 'CocinaUtilsMCP (tablas de equivalencia en codigo)',
+    'escalar_cantidad': 'CocinaUtilsMCP (reglas de escalado en codigo)',
+    'calcular_kcal': 'CocinaUtilsMCP (tabla nutricional en codigo)',
+    'consultar_calorias': 'DatosCocinaMCP (SQLite, tabla calorias)',
+    'consultar_alergias': 'DatosCocinaMCP (SQLite, tabla alergias orientativa)',
+    'consultar_inventario': 'DatosCocinaMCP (SQLite, tabla inventario)',
+    'info_producto_api': 'AlimentosAPIMCP (OpenFoodFacts, API viva sin llave)',
+}
+
+def componer_fuentes(respuesta, salidas_tool, tools_usadas_turno):
+    """Garantiza la linea de Fuentes despues de la redaccion del LLM.
+
+    Quita la(s) linea(s) "Fuentes:" que pudieron escribir el modelo (a veces
+    vacia, a veces sin URL, a veces al inicio de la respuesta) y anexa una
+    canonica: con las URLs reales de las salidas de las tools; si ninguna
+    trae URL, con las herramientas y su servidor; y si el turno no uso
+    herramientas, con el aviso de respuesta sin base documental.
+    """
+    texto = re.sub(r'(?m)^[ \t]*Fuentes:[^\n]*\n?', '', (respuesta or '').strip()).strip()
+    urls = []
+    for salida in salidas_tool:
+        urls += re.findall(r'https?://\S+', normalizar(salida))
+        # La salida ya es texto plano (str): los URLs aparecen igual; este
+        # paso tambien cubre listas anidadas aplanadas por normalizar.
+    urls = list(dict.fromkeys(urls))
+    if urls:
+        return texto + '\n\nFuentes:\n' + '\n'.join(f'- {u}' for u in urls)
+    if tools_usadas_turno:
+        etiquetas = '; '.join(
+            f"`{t}` ({FUENTE_SERVIDOR.get(t, 'servidor MCP')})" for t in tools_usadas_turno
+        )
+        return texto + '\n\nFuentes: herramientas MCP — ' + etiquetas + '.'
+    return texto + '\n\nFuentes: respuesta del modelo sin herramientas MCP (sin base documental).'
+
 CITA_SISTEMA = (
     'Responde en español, de forma breve. Cuando la salida de una herramienta contenga '
     'una URL o la palabra FUENTE, incluye esa referencia al final de tu respuesta en una '
@@ -621,9 +665,11 @@ def construir_payload(tool_name: str, pregunta: str) -> dict:
     if tool_name == 'buscar_recetas':
         return {'consulta': pregunta, 'k': 3}
     if tool_name == 'leer_receta':
-        # Sin id conocido, se delega a buscar_recetas; el modo Deterministic
-        # nunca deberia elegir leer_receta a ciegas.
-        raise ValueError("Para leer_receta primero necesitas un id de buscar_recetas.")
+        # El host extrae el identificador de la pregunta (la tool exige un id).
+        m = re.search(r'\b(\d+)\b', pregunta)
+        if not m:
+            raise ValueError('Para leer_receta necesito el identificador de la receta.')
+        return {'id': int(m.group(1))}
     if tool_name == 'convertir_volumen':
         return {'frase': pregunta}
     if tool_name == 'calcular_kcal':
@@ -687,6 +733,7 @@ async def responder(pregunta, modo='Guided', preferida='Auto', historial=None,
             salida = await ejecutar_tool(seleccionada, pregunta)
             traza['tools_usadas'] = [seleccionada]
             answer = await redactar_herramienta(pregunta, seleccionada, salida)
+            answer = componer_fuentes(answer, [salida], traza['tools_usadas'])
 
         elif modo == 'Guided':
             mensajes = mensajes_del_historial(pregunta, historial)
@@ -695,17 +742,25 @@ async def responder(pregunta, modo='Guided', preferida='Auto', historial=None,
             resultado = await agent_mcp.ainvoke({'messages': mensajes})
             usadas = tools_usadas(resultado['messages'])
             traza['tools_usadas'] = usadas
+            salidas_tool = [normalizar(getattr(m, 'content', '')) for m in resultado['messages']
+                            if getattr(m, 'type', '') == 'tool']
             answer = normalizar(resultado['messages'][-1].content)
+            answer = componer_fuentes(answer, salidas_tool, usadas)
             if fallback_guided and (not usadas) and seleccionada is not None:
                 salida = await ejecutar_tool(seleccionada, pregunta)
                 answer = await redactar_herramienta(pregunta, seleccionada, salida)
                 traza['tools_usadas'] = [seleccionada]
                 traza['fallback_guided'] = True
+                answer = componer_fuentes(answer, [salida], traza['tools_usadas'])
 
         else:  # Autonomous
             resultado = await agent_mcp.ainvoke({'messages': mensajes_del_historial(pregunta, historial)})
-            traza['tools_usadas'] = tools_usadas(resultado['messages'])
+            usadas = tools_usadas(resultado['messages'])
+            traza['tools_usadas'] = usadas
+            salidas_tool = [normalizar(getattr(m, 'content', '')) for m in resultado['messages']
+                            if getattr(m, 'type', '') == 'tool']
             answer = normalizar(resultado['messages'][-1].content)
+            answer = componer_fuentes(answer, salidas_tool, usadas)
     except Exception as exc:
         traza['error'] = str(exc)
         answer = f"Ocurrió un error: {exc}"
@@ -790,6 +845,135 @@ print(resp)
 
 md(r"""
 **Observación (corrida real).** POR LLENAR — el dato retornado (en vivo o desde la cache, con su rotulo) y la coherencia de la cifra con la corrida.
+""")
+
+md(r"""
+### 8.1 Batería de validación de las herramientas: 27 consultas + 2 mezclas + 1 caso sin datos
+
+Esta subsección documenta el **chequeo de correcto funcionamiento del protocolo con las nueve herramientas y los cuatro servidores**: para cada una de las 9 tools se plantean **3 consultas** (27 turnos en modo Guided, con la heurística del host activa) y se verifica que la herramienta esperada sea la invocada. Complementan la batería:
+
+- **2 consultas mezcla** que cruzan varias tools (y varios servidores) en un solo turno, incluida una que pide encadenar la mayoría de las capacidades del asistente;
+- **1 consulta sin respuesta posible**: información que no existe ni en el corpus ni en las tools — la expectativa correcta es que el agente **no invoque ninguna herramienta** y admita que no puede responder (reproducción honesta del riesgo de alucinacion que MCP evita cuando la herramienta responde).
+
+Cada turno se registra con su tool usada, el resultado del chequeo y la latencia; el resumen al final agrega el acierto por herramienta.
+""")
+
+code(r"""
+# Bateria de validacion: 3 consultas por cada una de las 9 tools del caso.
+VALIDACION = [
+    ('buscar_recetas', [
+        '¿Cómo preparo arepas de queso? Cita la receta que uses.',
+        'Dame una receta de ceviche de pescado.',
+        '¿Qué ingredientes lleva el sancocho de gallina?',
+    ]),
+    ('leer_receta', [
+        'Muestra la receta completa con identificador 1.',
+        '¿Qué contiene la receta numero 2?',
+        'Dame el contenido de la receta cuyo identificador es 3.',
+    ]),
+    ('convertir_volumen', [
+        '¿Cuántos ml hay en 3 tazas?',
+        'Convierte 500 ml a tazas.',
+        '¿Cuántos mililitros son 8 onzas?',
+    ]),
+    ('calcular_kcal', [
+        '¿Cuántas kcal tienen 150 gramos de queso?',
+        '¿Cuántas kcal tienen 200 gramos de pollo?',
+        'Kcal de 100 gramos de arroz.',
+    ]),
+    ('escalar_cantidad', [
+        'Escala 500 gramos de masa para 8 comensales si la receta original dice 500 gramos.',
+        'Escala 300 gramos de arroz para 6 comensales.',
+        'Duplica las porciones de la receta.',
+    ]),
+    ('consultar_calorias', [
+        '¿Cuántas kcal por 100 gramos tienen el arroz?',
+        '¿Cuántas kcal por 100 gramos tiene el queso?',
+        'Dame las kcal por 100 g del pollo.',
+    ]),
+    ('consultar_alergias', [
+        '¿La pasta es apta para alguien alérgico al gluten?',
+        '¿El camaron tiene alergenos de cuidado?',
+        '¿El queso es adecuado para alguien con alergia a la lactosa?',
+    ]),
+    ('consultar_inventario', [
+        '¿Qué tengo en la nevera?',
+        'Lista mi inventario de cocina.',
+        '¿Hay arroz en la nevera?',
+    ]),
+    ('info_producto_api', [
+        'Consulta el producto con código de barras 3017620422003.',
+        'Busca en OpenFoodFacts el código de barras 5449000000996.',
+        '¿Cuántas kcal tiene el producto 5449000000996 segun la API?',
+    ]),
+]
+
+MEZCLAS = [
+    ('Busca una receta sencilla de ensalada, revisa qué tengo en la nevera '
+     'y dime cuántas kcal tienen 200 gramos de aguacate.',
+     ['buscar_recetas', 'consultar_inventario', 'calcular_kcal']),
+    ('Busca la receta del sancocho de gallina y muestrala completa por su '
+     'identificador, escala 500 gramos de papa para 8 comensales, dime las '
+     'kcal por 100 gramos de la papa y si es apta para alérgicos al gluten.',
+     ['buscar_recetas', 'leer_receta', 'escalar_cantidad', 'consultar_calorias',
+      'consultar_alergias']),
+]
+
+SIN_DATOS = 'Recomiendame un restaurante japonés cerca de la Torre Eiffel con reserva para mañana.'
+
+async def correr_bateria():
+    filas = []
+    for herramienta, consultas in VALIDACION:
+        for n, consulta in enumerate(consultas, 1):
+            resp, traza, seg = await responder(consulta, modo='Guided')
+            usadas = traza.get('tools_usadas') or []
+            ok = herramienta in usadas
+            filas.append({'tipo': 'tool', 'ref': herramienta, 'caso': n,
+                          'usadas': ','.join(usadas) or '(ninguna)', 'ok': ok,
+                          'latencia_s': round(seg, 1)})
+            print(f"{herramienta:<21} | caso {n} | usadas={','.join(usadas) or '-':<45} | ok={ok} | {seg:.1f}s")
+    for (consulta, esperadas), n in zip(MEZCLAS, (1, 2)):
+        resp, traza, seg = await responder(consulta, modo='Guided')
+        usadas = traza.get('tools_usadas') or []
+        acertadas = sum(t in usadas for t in esperadas)
+        ok = acertadas == len(esperadas)
+        filas.append({'tipo': 'mezcla', 'ref': f'mezcla {n}', 'caso': n,
+                      'usadas': ','.join(usadas) or '(ninguna)',
+                      'ok': ok, 'latencia_s': round(seg, 1),
+                      'esperadas': f'{acertadas}/{len(esperadas)}'})
+        print(f"mezcla {n}       | usadas={','.join(usadas) or '-':<45} | esperadas {acertadas}/{len(esperadas)} | {seg:.1f}s")
+    resp, traza, seg = await responder(SIN_DATOS, modo='Guided')
+    usadas = traza.get('tools_usadas') or []
+    ok = len(usadas) == 0
+    filas.append({'tipo': 'abstencion', 'ref': 'sin datos', 'caso': 1,
+                  'usadas': ','.join(usadas) or '(ninguna)', 'ok': ok,
+                  'latencia_s': round(seg, 1)})
+    print(f"abstencion      | usadas={','.join(usadas) or '-':<45} | ok={ok} | {seg:.1f}s")
+    print('Respuesta al caso sin datos:', resp[:300])
+    return filas
+
+filas_bateria = await correr_bateria()
+""")
+
+md(r"""
+**Observación (corrida real).** POR LLENAR — resultado turno a turno de la batería: las 9 herramientas con sus 3 casos, las 2 mezclas y el caso sin datos, con las latencias.
+""")
+
+code(r"""
+# Resumen de la batería: acierto por herramienta tipo (tool / mezcla / abstencion).
+resumen_bateria = (
+    pd.DataFrame(filas_bateria)
+    .groupby(['tipo', 'ref'])
+    .agg(aciertos=('ok', 'sum'), casos=('ok', 'count'),
+         acierto_pct=('ok', lambda s: round(100 * s.mean(), 1)),
+         latencia_media_s=('latencia_s', 'mean'))
+    .round(1)
+)
+display(resumen_bateria)
+""")
+
+md(r"""
+**Observación (corrida real).** POR LLENAR — lectura del resumen de la batería: qué herramientas pasaron las 3 validaciones, cómo se comportaron las mezclas y si el agente se abstuvo ante información inexistente.
 """)
 
 # ==========================================================================
