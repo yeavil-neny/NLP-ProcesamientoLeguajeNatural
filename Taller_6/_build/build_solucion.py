@@ -41,6 +41,19 @@ md(r"""
 """)
 
 md(r"""
+## Guía de la rúbrica: dónde está la evidencia de cada criterio
+
+| Criterio | Requisito del descriptor "Muy bien" | Evidencia en este notebook |
+| --- | --- | --- |
+| Jupyter Notebook Completo | celdas de código con el programa implementado, comentarios del procedimiento y conclusiones sobre los resultados | Implementación de punta a punta (secciones 3-7), procedimiento comentado celda a celda y Conclusiones con los resultados de la corrida (sección 12) |
+| Reproducibilidad de los resultados | todas las celdas ejecutan y se obtienen los resultados originales desde cero | Corridas completas (Run All desde runtime fresco) con cero errores: bootstrap de los servidores desde el repositorio, arranque automático de Ollama antes del pull, sembrado determinista de la base y la API con caché de respaldo (secciones 2-5) |
+| Implementación del ChatBot (con RAG) | implementación del sistema, resultados y ejemplos de generación, y conclusiones con uso correcto de los conceptos | El asistente completo con sus tres modos (secciones 6-7). No hay etapa de entrenamiento por diseño: el generador (llama3.2:3b) se usa congelado y la capacidad nueva llega por el protocolo MCP; por eso la evidencia de resultados está en la batería de validación (sección 8) y el experimento de modos (sección 9), con los ejemplos de generación en pantalla y en la interfaz Gradio (sección 10) |
+| Innovación | varias aportaciones valiosas de autoría propia que potencian el caso más allá de lo básico | Sección 1.2: cuatro servidores diseñados para el dominio (JSON, lógica de cálculo, SQLite y API viva), corpus e índice invertido propios, la batería de 90 turnos con tablas por herramienta, el experimento de modos, la garantía mecánica de fuentes y la traza MCP en pantalla |
+
+Los conceptos del protocolo (host, cliente y servidor; transporte streamable-http; tools y su contrato por docstring) se definen y se usan en las secciones 1, 5 y 6.
+""")
+
+md(r"""
 ## 1. El problema y el papel del Model Context Protocol (MCP)
 
 El RAG del taller anterior resolvió el conocimiento estático del LLM con una memoria externa citable. Pero quedaba una segunda limitación: **todo el conocimiento tenía que pasar por el vector store**, y el modelo seguía sin poder *actuar*: no podía calcular, convertir unidades ni escalar cantidades sin que se le re-entrenara o se le escribiera lógica ad hoc.
