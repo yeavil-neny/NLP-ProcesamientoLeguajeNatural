@@ -1308,6 +1308,8 @@ md(r"""
 ## 10. De la consola a la interfaz: el chatbot con Gradio
 
 El mismo agente, montado en una interfaz de chat con Gradio, en la línea del notebook guía. Los controles funcionales son tres — el modo de ejecución, la tool preferida (para forzarla cuando la selección automática fallase) y la opción de mostrar la traza MCP — y todo lo demás (a qué servidor pertenece la pregunta) se infiere del mensaje con la heurística del host. La traza MCP debajo de cada respuesta es la evidencia en pantalla de qué servidor respondió.
+
+**Para conversar en vivo**: ejecutar la celda de lanzamiento (la de esta sección). Nota tras un Run All completo: si ya pasaron el cierre de la interfaz y el apagado limpio de la sección 11, los puertos quedaron libres — bastan dos celdas para reactivar el servicio sin re-ejecutar el notebook: la celda de inicio de servidores (sección 5.1, que relanza lo apagado y espera los sondeos de salud) y esta celda de lanzamiento; el agente, las tools y la heurística siguen en memoria del kernel, de modo que el historial de validación y los resultados quedan intactos.
 """)
 
 code(r"""
@@ -1366,7 +1368,9 @@ gr_blocks.close()
 md(r"""
 ## 11. Apagado limpio
 
-Se cierran los procesos MCP que el notebook mismo inició (los servidores que ya venían de afuera permanecen), para no dejar sesiones colgadas.
+Se cierran los procesos MCP que el notebook mismo inició (los servidores que ya venían de afuera permanecen), para no dejar sesiones colgadas — es el cierre natural del ciclo de vida del entregable: un Run All completo termina sin procesos pendientes, como en la corrida registrada.
+
+**Si después se quiere conversar de nuevo con la interfaz**: el apagado no es permanente. Ejecutando de nuevo la celda de inicio de servidores (sección 5.1, que relanza los procesos y espera los sondeos de salud) y la celda de lanzamiento de Gradio (sección 10), el asistente vuelve a estar disponible con todo su estado (agente, tools y heurística) sin re-ejecutar el resto del notebook. Y si las celdas se ejecutaran en un orden adverso (por ejemplo, la interfaz sin servidores), los turnos advierten con el error de conexión de la tool correspondiente, sin tumbar celdas.
 """)
 
 code(r"""
