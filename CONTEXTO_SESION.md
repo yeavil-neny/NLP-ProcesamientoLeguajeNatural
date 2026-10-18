@@ -49,7 +49,7 @@ El remoto (GitHub, `main`) es la fuente de verdad de todas las entregas.
 | `8b4215b` (Yenny, 4 servidores) | **Corrida invalidada**: en runtime fresco, `ollama pull` corrió antes de `ollama serve`; el modelo no se descargó y 19 turnos con LLM devolvieron 404. La parte MCP funcionó completa. **Fix en `5228b50`**: orden instala → sirve → pull condicionado a `ollama list` |
 | `292d725` (Yenny, válida) | 39 turnos, 37/39 (94.9%); Deterministic 100%/2.2 s; aún con 5 demos y batería por crear |
 | `ac3077f` (Fredy) | 4 servidores + batería 8.1 (90 turnos compacta) + garantía de Fuentes; 0 errores; sync en `c6982cd` |
-| **`586a5c1` → adoptada como FINAL** | **Sección 8 en estructura modular (8.0 infra + 8.1-8.9 celda por herramienta con tabla local idempotente + 8.10 mezclas + 8.11 sin datos + 8.12 consolidado)**; corrida propia limpia; sync final en `0efc854` (obs 8.12 verificada contra su corrida, observación 9, lectura, conclusiones con la frontera MCP). Excepción de convención: los indicadores ✅/❌ de test **se consienten** en las salidas de la batería (decisión del equipo: son chequeo funcional, no decoración) |
+| **Adopcion final (con corrida de Fredy `ef02358`)** | **Corrida final limpia (0 errores, corrida fresca, codigo sin cambios, patron estable por TERCERA corrida: bateria 82/90, experimento 35/89.7%); sync en `64daa92` con latencias nuevas (mezcla 1 en 3.5 s; experimento 2.3/1.9/3.6 s; primer turno 90.5 s) y NUEVA guia de la rubrica tras la portada** (evidencia de cada criterio + aclaracion de que no hay etapa de entrenamiento por diseno); generador portado en `a68a643` |
 
 ### Cifras oficiales finales de la corrida modular (adopcion `0efc854`)
 
@@ -74,6 +74,7 @@ El remoto (GitHub, `main`) es la fuente de verdad de todas las entregas.
 3. **Estilo de la narrativa**: registro impersonal/tercera persona (sin "veamos", "puedes", "nuestro"); los prompts y las respuestas del bot (que la app dirige al usuario) se citan tal cual; **sin emojis decorativos** (las estrellas ★ de calificaciones se conservan).
 4. **No editar**: `Taller_2/proyecto_transformers_clasificacion.ipynb` (instrucción explícita del 20-sep-2026).
 5. **Sincronización post-corrida**: editar SOLO celdas markdown; nunca tocar salidas ni execution_count; verificar bit a bit contra el commit de la corrida (scripts en `Taller_6/_build/`).
+6. **Excepción de iconos**: los indicadores ✅/❌ de test en las salidas de la batería 8.1-8.12 se consienten (decisión del 17-oct-2026: son chequeo funcional); los demás iconos decorativos siguen fuera de la narrativa.
 
 ## 6. Cómo trabajar los notebooks del taller 6 (flujo reproducible)
 
