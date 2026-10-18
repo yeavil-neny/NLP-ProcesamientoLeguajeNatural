@@ -7,17 +7,22 @@ real en un paso posterior (los numeros pendientes estan marcados con
 'POR LLENAR').
 """
 import json
+import sys
 from pathlib import Path
 
-# Anclado a la ubicacion del script: siempre ../build_solucion.py -> Taller_6/,
-# sin importar desde que carpeta se ejecute.
-DST = Path(__file__).resolve().parents[1] / "proyecto_mcp_chatbot_recetas.ipynb"
+# Anclado a la ubicacion del script; el primer argumento opcional permite
+# generar a otra ruta (p. ej. para pruebas) sin tocar el notebook entregado.
+DST = Path(sys.argv[1]) if len(sys.argv) > 1 else (
+    Path(__file__).resolve().parents[1] / "proyecto_mcp_chatbot_recetas.ipynb")
 
 CELLS = []
 
 
 def md(text):
     CELLS.append(("markdown", text.strip("\n")))
+
+# Alias: las celdas markdown portadas del notebook se llaman igual.
+markdown = md
 
 
 def code(text):
@@ -772,81 +777,362 @@ async def responder(pregunta, modo='Guided', preferida='Auto', historial=None,
 # ==========================================================================
 # Ejemplos
 # ==========================================================================
-md(r"""
+# ==========================================================================
+# Validacion del asistente (seccion 8) — estructura modular adoptada
+# ==========================================================================
+markdown(r"""
 ## 8. Validación del asistente por categoría de pregunta, herramienta y modo de ejecución (90 turnos)
 
-Con las herramientas del protocolo descritas y el agente creado, esta única sección valida el funcionamiento de la solución con el doble orden que fija la estrategia de ejecución: **por categoría de pregunta** (cada una con su tool y su servidor) y, dentro de cada consulta, **por estrategia o modo de ejecución del agente** (Guided, Autonomous, Deterministic). Cada caso corre una sola vez — sin consultas repetidas — y cada turno imprime su salida completa (encabezado, tools usadas y latencia, respuesta final del asistente y línea de "Fuentes" garantizada por el host) para que la entrega sea analizable pregunta por pregunta.
+Con las herramientas del protocolo descritas y el agente creado, esta sección valida el funcionamiento de la solución con un **desglose modular por herramienta y celda** para facilitar la inspección individual, depuración y reproducibilidad:
 
-- **Categoría `tool`** (81 turnos): para cada una de las 9 tools se plantean **3 consultas**, y cada consulta corre en los 3 modos. El chequeo pasa si la tool esperada es la invocada. Las 9 tools cubren los cuatro comportamientos de negocio del asistente:
+- **Infraestructura de pruebas (Sección 8.0)**: Define funciones asíncronas de ejecución (`validar_caso`, `correr_pruebas_tool`, etc.) y el acumulador global `filas_bateria`.
+- **Categoría `tool` (Secciones 8.1 a 8.9 - 81 turnos)**: Cada una de las 9 tools cuenta con su propia celda de código independiente con **3 consultas** evaluadas en los 3 modos (`Guided`, `Autonomous`, `Deterministic`). Cada celda imprime los resultados organizados de sus 9 turnos junto con una tabla resumen local de acierto y latencia.
+- **Categoría `todas_las_tools` (Sección 8.10 - 6 turnos)**: 2 consultas complejas con encadenamiento de múltiples herramientas y servidores en un solo turno.
+- **Categoría `sin_datos` (Sección 8.11 - 3 turnos)**: 1 consulta fuera de dominio para verificar la abstención honesta y la mitigación de alucinaciones.
+- **Resumen global (Sección 8.12)**: Consolidación de los 90 turnos con métricas agregadas de tasa de acierto y latencia media por modo y servidor.
+""")
 
-| Comportamiento | Tools (servidor) |
-| --- | --- |
-| documentos con cita de la fuente | `buscar_recetas`, `leer_receta` (RecetasDocMCP, JSON) |
-| cálculo exacto de cocina | `convertir_volumen`, `escalar_cantidad`, `calcular_kcal` (CocinaUtilsMCP) |
-| datos de consulta complementarios | `consultar_calorias`, `consultar_alergias`, `consultar_inventario` (DatosCocinaMCP, SQLite) |
-| producto envasado por API viva | `info_producto_api` (AlimentosAPIMCP, OpenFoodFacts) |
+code(r'''
+# Batería de validación: configuración e infraestructura de pruebas
+# Se autoabastece de MODOS para permitir ejecución modular celda por celda.
+import pandas as pd
+MODOS = ['Guided', 'Autonomous', 'Deterministic']
 
-- **Categoría `todas_las_tools`** (6 turnos): 2 consultas mezcla que cruzan varias tools y varios servidores en un solo turno; cada mezcla corre en los 3 modos. En Guided y Autonomous el chequeo pasa si la cadena completa de tools se produjo; en Deterministic el host solo ejecuta la tool inferida (se registra esa conducta, no un fallo).
-- **Categoría `sin_datos`** (3 turnos): 1 consulta con información que no existe ni en el corpus ni en las tools, en los 3 modos — la expectativa correcta es que el agente **no invoque ninguna herramienta** y admita que no puede responder (reproducción honesta del riesgo de alucinacion que MCP evita cuando la herramienta sí responde).
+async def validar_caso(tipo, ref, consulta, modo, esperada):
+    """Un turno de la batería: evalúa si la herramienta esperada fue invocada según el modo."""
+    resp, traza, seg = await responder(consulta, modo=modo)
+    usadas = traza.get('tools_usadas') or []
+    if tipo == 'tool':
+        ok = esperada in usadas
+    elif tipo == 'mezcla':
+        # En Deterministic el host solo ejecuta la tool inferida (no hay encadenamiento)
+        ok = (sum(t in usadas for t in esperada) == len(esperada)
+              if modo != 'Deterministic' else len(usadas) == 1)
+    else:  # abstención: la respuesta correcta NO debe usar ninguna herramienta
+        ok = len(usadas) == 0
+    return {
+        'tipo': tipo,
+        'ref': ref,
+        'modo': modo,
+        'consulta': consulta,
+        'usadas': ','.join(usadas) or '(ninguna)',
+        'ok': ok,
+        'latencia_s': round(seg, 1),
+        'resp': resp
+    }
 
-Total de la batería: **90 turnos**. El chequeo y la latencia quedan en `filas_bateria` y se agregan en las tablas de resumen del final.
+async def correr_pruebas_tool(herramienta: str, consultas: list, servidor: str = ""):
+    """Ejecuta y formatea limpiamente los 9 turnos de una herramienta (3 casos x 3 modos)."""
+    global filas_bateria
+    print("=" * 80)
+    print(f"HERRAMIENTA: {herramienta}  |  SERVIDOR: {servidor}  (9 turnos)")
+    print("=" * 80)
+
+    filas_locales = []
+    for n, consulta in enumerate(consultas, 1):
+        print(f"\n{'─'*80}")
+        print(f"Caso {n}/3: \"{consulta}\"")
+        print(f"{'─'*80}")
+        for modo in MODOS:
+            f = await validar_caso('tool', herramienta, consulta, modo, herramienta)
+            f['caso'] = n
+            filas_locales.append(f)
+
+            icono = "✅" if f['ok'] else "❌"
+            print(f"\n{icono} [{f['modo']}] Tool invocada: {f['usadas']}  |  Latencia: {f['latencia_s']:.1f} s")
+            print(f"Respuesta del asistente:\n{f['resp']}")
+
+    # Actualizar filas_bateria evitando duplicados si se reejecuta la celda
+    filas_bateria = [f for f in filas_bateria if not (f.get('tipo') == 'tool' and f.get('ref') == herramienta)]
+    filas_bateria.extend(filas_locales)
+
+    print(f"\n{'─'*80}")
+    print(f"RESUMEN DE VALIDACIÓN: {herramienta}")
+    print(f"{'─'*80}")
+    df_tool = pd.DataFrame(filas_locales)[['caso', 'modo', 'ok', 'usadas', 'latencia_s']]
+    df_tool.columns = ['Caso', 'Modo', 'Acierto', 'Tools Usadas', 'Latencia (s)']
+    display(df_tool)
+    return filas_locales
+
+async def correr_pruebas_mezclas(mezclas: list):
+    """Ejecuta y formatea las pruebas complejas multi-herramienta (6 turnos)."""
+    global filas_bateria
+    print("=" * 80)
+    print("CATEGORÍA: todas_las_tools — Mezclas Multi-Herramienta (6 turnos)")
+    print("=" * 80)
+
+    filas_locales = []
+    for n, (consulta, esperadas) in enumerate(mezclas, 1):
+        print(f"\n{'─'*80}")
+        print(f"Mezcla {n}/2: \"{consulta}\"")
+        print(f"Tools esperadas: {', '.join(esperadas)}")
+        print(f"{'─'*80}")
+        for modo in MODOS:
+            f = await validar_caso('mezcla', f'mezcla {n}', consulta, modo, esperadas)
+            f['caso'] = n
+            filas_locales.append(f)
+
+            icono = "✅" if f['ok'] else "❌"
+            print(f"\n{icono} [{f['modo']}] Tools invocadas: {f['usadas']}  |  Latencia: {f['latencia_s']:.1f} s")
+            print(f"Respuesta del asistente:\n{f['resp']}")
+
+    filas_bateria = [f for f in filas_bateria if f.get('tipo') != 'mezcla']
+    filas_bateria.extend(filas_locales)
+
+    print(f"\n{'─'*80}")
+    print("RESUMEN DE VALIDACIÓN: Mezclas Multi-Herramienta")
+    print(f"{'─'*80}")
+    df_mezcla = pd.DataFrame(filas_locales)[['caso', 'modo', 'ok', 'usadas', 'latencia_s']]
+    df_mezcla.columns = ['Mezcla', 'Modo', 'Acierto', 'Tools Usadas', 'Latencia (s)']
+    display(df_mezcla)
+    return filas_locales
+
+async def correr_pruebas_abstencion(consulta: str):
+    """Ejecuta la prueba de abstención honesta ante información fuera de dominio (3 turnos)."""
+    global filas_bateria
+    print("=" * 80)
+    print("CATEGORÍA: sin_datos — Evaluación de Abstención y Alucinación (3 turnos)")
+    print("=" * 80)
+    print(f"\nConsulta fuera de dominio: \"{consulta}\"")
+    print("Comportamiento esperado: No invocar herramientas MCP (abstención honesta)")
+    print(f"{'─'*80}")
+
+    filas_locales = []
+    for modo in MODOS:
+        f = await validar_caso('abstencion', 'sin datos', consulta, modo, None)
+        f['caso'] = 1
+        filas_locales.append(f)
+
+        icono = "✅" if f['ok'] else "❌"
+        print(f"\n{icono} [{f['modo']}] Tools invocadas: {f['usadas']}  |  Latencia: {f['latencia_s']:.1f} s")
+        print(f"Respuesta del asistente:\n{f['resp']}")
+
+    filas_bateria = [f for f in filas_bateria if f.get('tipo') != 'abstencion']
+    filas_bateria.extend(filas_locales)
+
+    print(f"\n{'─'*80}")
+    print("RESUMEN DE VALIDACIÓN: Abstención")
+    print(f"{'─'*80}")
+    df_abs = pd.DataFrame(filas_locales)[['caso', 'modo', 'ok', 'usadas', 'latencia_s']]
+    df_abs.columns = ['Caso', 'Modo', 'Abstención OK', 'Tools Usadas', 'Latencia (s)']
+    display(df_abs)
+    return filas_locales
+
+# Inicializar acumulador de turnos
+filas_bateria = []
+print("Infraestructura de pruebas para Sección 8 inicializada correctamente.")
+''')
+
+markdown(r"""
+### 8.1 Herramienta: `buscar_recetas` (Servidor: `RecetasDocMCP`)
+
+Búsqueda semántica y por texto de recetas culinarias en el corpus JSON con cita obligatoria de fuentes documentales.
+- **Casos de prueba (3)**:
+  1. *"¿Cómo preparo arepas de queso? Cita la receta que uses."*
+  2. *"Dame una receta de ceviche de pescado."*
+  3. *"¿Qué ingredientes lleva el sancocho de gallina?"*
+- **Evaluación**: 3 consultas x 3 modos = **9 turnos**.
 """)
 
 code(r"""
-# Bateria de validacion: 3 consultas por cada una de las 9 tools del caso.
-# La celda se autoabastece de MODOS (asi corren celdas sueltas sin haber
-# ejecutado antes la seccion 9 del experimento, donde tambien se define).
-MODOS = ['Guided', 'Autonomous', 'Deterministic']
-
-VALIDACION = [
-    ('buscar_recetas', [
-        '¿Cómo preparo arepas de queso? Cita la receta que uses.',
-        'Dame una receta de ceviche de pescado.',
-        '¿Qué ingredientes lleva el sancocho de gallina?',
-    ]),
-    ('leer_receta', [
-        'Muestra la receta completa con identificador 1.',
-        '¿Qué contiene la receta numero 2?',
-        'Dame el contenido de la receta cuyo identificador es 3.',
-    ]),
-    ('convertir_volumen', [
-        '¿Cuántos ml hay en 3 tazas?',
-        'Convierte 500 ml a tazas.',
-        '¿Cuántos mililitros son 8 onzas?',
-    ]),
-    ('calcular_kcal', [
-        '¿Cuántas kcal tienen 150 gramos de queso?',
-        '¿Cuántas kcal tienen 200 gramos de pollo?',
-        'Kcal de 100 gramos de arroz.',
-    ]),
-    ('escalar_cantidad', [
-        'Escala 500 gramos de masa para 8 comensales si la receta original dice 500 gramos.',
-        'Escala 300 gramos de arroz para 6 comensales.',
-        'Duplica las porciones de la receta.',
-    ]),
-    ('consultar_calorias', [
-        '¿Cuántas kcal por 100 gramos tienen el arroz?',
-        '¿Cuántas kcal por 100 gramos tiene el queso?',
-        'Dame las kcal por 100 g del pollo.',
-    ]),
-    ('consultar_alergias', [
-        '¿La pasta es apta para alguien alérgico al gluten?',
-        '¿El camaron tiene alergenos de cuidado?',
-        '¿El queso es adecuado para alguien con alergia a la lactosa?',
-    ]),
-    ('consultar_inventario', [
-        '¿Qué tengo en la nevera?',
-        'Lista mi inventario de cocina.',
-        '¿Hay arroz en la nevera?',
-    ]),
-    ('info_producto_api', [
-        'Consulta el producto con código de barras 3017620422003.',
-        'Busca en OpenFoodFacts el código de barras 5449000000996.',
-        '¿Cuántas kcal tiene el producto 5449000000996 segun la API?',
-    ]),
+# Validación: buscar_recetas (RecetasDocMCP) — 9 turnos
+consultas_buscar_recetas = [
+    '¿Cómo preparo arepas de queso? Cita la receta que uses.',
+    'Dame una receta de ceviche de pescado.',
+    '¿Qué ingredientes lleva el sancocho de gallina?',
 ]
 
-MEZCLAS = [
+await correr_pruebas_tool('buscar_recetas', consultas_buscar_recetas, 'RecetasDocMCP')
+""")
+
+markdown(r"""
+### 8.2 Herramienta: `leer_receta` (Servidor: `RecetasDocMCP`)
+
+Recuperación íntegra de los datos de una receta a partir de su identificador numérico único.
+- **Casos de prueba (3)**:
+  1. *"Muestra la receta completa con identificador 1."*
+  2. *"¿Qué contiene la receta numero 2?"*
+  3. *"Dame el contenido de la receta cuyo identificador es 3."*
+- **Evaluación**: 3 consultas x 3 modos = **9 turnos**.
+""")
+
+code(r"""
+# Validación: leer_receta (RecetasDocMCP) — 9 turnos
+consultas_leer_receta = [
+    'Muestra la receta completa con identificador 1.',
+    '¿Qué contiene la receta numero 2?',
+    'Dame el contenido de la receta cuyo identificador es 3.',
+]
+
+await correr_pruebas_tool('leer_receta', consultas_leer_receta, 'RecetasDocMCP')
+""")
+
+markdown(r"""
+### 8.3 Herramienta: `convertir_volumen` (Servidor: `CocinaUtilsMCP`)
+
+Conversión determinista de medidas de volumen culinarias (tazas, mililitros, onzas líquidas).
+- **Casos de prueba (3)**:
+  1. *"¿Cuántos ml hay en 3 tazas?"*
+  2. *"Convierte 500 ml a tazas."*
+  3. *"¿Cuántos mililitros son 8 onzas?"*
+- **Evaluación**: 3 consultas x 3 modos = **9 turnos**.
+""")
+
+code(r"""
+# Validación: convertir_volumen (CocinaUtilsMCP) — 9 turnos
+consultas_convertir_volumen = [
+    '¿Cuántos ml hay en 3 tazas?',
+    'Convierte 500 ml a tazas.',
+    '¿Cuántos mililitros son 8 onzas?',
+]
+
+await correr_pruebas_tool('convertir_volumen', consultas_convertir_volumen, 'CocinaUtilsMCP')
+""")
+
+markdown(r"""
+### 8.4 Herramienta: `calcular_kcal` (Servidor: `CocinaUtilsMCP`)
+
+Cálculo de contenido calórico total según el gramaje y tipo de alimento.
+- **Casos de prueba (3)**:
+  1. *"¿Cuántas kcal tienen 150 gramos de queso?"*
+  2. *"¿Cuántas kcal tienen 200 gramos de pollo?"*
+  3. *"Kcal de 100 gramos de arroz."*
+- **Evaluación**: 3 consultas x 3 modos = **9 turnos**.
+""")
+
+code(r"""
+# Validación: calcular_kcal (CocinaUtilsMCP) — 9 turnos
+consultas_calcular_kcal = [
+    '¿Cuántas kcal tienen 150 gramos de queso?',
+    '¿Cuántas kcal tienen 200 gramos de pollo?',
+    'Kcal de 100 gramos de arroz.',
+]
+
+await correr_pruebas_tool('calcular_kcal', consultas_calcular_kcal, 'CocinaUtilsMCP')
+""")
+
+markdown(r"""
+### 8.5 Herramienta: `escalar_cantidad` (Servidor: `CocinaUtilsMCP`)
+
+Escalado proporcional de cantidades de ingredientes en función del número de comensales.
+- **Casos de prueba (3)**:
+  1. *"Escala 500 gramos de masa para 8 comensales si la receta original dice 500 gramos."*
+  2. *"Escala 300 gramos de arroz para 6 comensales."*
+  3. *"Duplica las porciones de la receta."*
+- **Evaluación**: 3 consultas x 3 modos = **9 turnos**.
+""")
+
+code(r"""
+# Validación: escalar_cantidad (CocinaUtilsMCP) — 9 turnos
+consultas_escalar_cantidad = [
+    'Escala 500 gramos de masa para 8 comensales si la receta original dice 500 gramos.',
+    'Escala 300 gramos de arroz para 6 comensales.',
+    'Duplica las porciones de la receta.',
+]
+
+await correr_pruebas_tool('escalar_cantidad', consultas_escalar_cantidad, 'CocinaUtilsMCP')
+""")
+
+markdown(r"""
+### 8.6 Herramienta: `consultar_calorias` (Servidor: `DatosCocinaMCP`)
+
+Consulta a base de datos relacional SQLite de la tabla nutricional de calorías base por cada 100g.
+- **Casos de prueba (3)**:
+  1. *"¿Cuántas kcal por 100 gramos tienen el arroz?"*
+  2. *"¿Cuántas kcal por 100 gramos tiene el queso?"*
+  3. *"Dame las kcal por 100 g del pollo."*
+- **Evaluación**: 3 consultas x 3 modos = **9 turnos**.
+""")
+
+code(r"""
+# Validación: consultar_calorias (DatosCocinaMCP) — 9 turnos
+consultas_consultar_calorias = [
+    '¿Cuántas kcal por 100 gramos tienen el arroz?',
+    '¿Cuántas kcal por 100 gramos tiene el queso?',
+    'Dame las kcal por 100 g del pollo.',
+]
+
+await correr_pruebas_tool('consultar_calorias', consultas_consultar_calorias, 'DatosCocinaMCP')
+""")
+
+markdown(r"""
+### 8.7 Herramienta: `consultar_alergias` (Servidor: `DatosCocinaMCP`)
+
+Consulta a base de datos relacional SQLite de la tabla de alérgenos y restricciones médicas alimentarias.
+- **Casos de prueba (3)**:
+  1. *"¿La pasta es apta para alguien alérgico al gluten?"*
+  2. *"¿El camaron tiene alergenos de cuidado?"*
+  3. *"¿El queso es adecuado para alguien con alergia a la lactosa?"*
+- **Evaluación**: 3 consultas x 3 modos = **9 turnos**.
+""")
+
+code(r"""
+# Validación: consultar_alergias (DatosCocinaMCP) — 9 turnos
+consultas_consultar_alergias = [
+    '¿La pasta es apta para alguien alérgico al gluten?',
+    '¿El camaron tiene alergenos de cuidado?',
+    '¿El queso es adecuado para alguien con alergia a la lactosa?',
+]
+
+await correr_pruebas_tool('consultar_alergias', consultas_consultar_alergias, 'DatosCocinaMCP')
+""")
+
+markdown(r"""
+### 8.8 Herramienta: `consultar_inventario` (Servidor: `DatosCocinaMCP`)
+
+Consulta a base de datos SQLite para verificar ingredientes actualmente disponibles en despensa y refrigerador.
+- **Casos de prueba (3)**:
+  1. *"¿Qué tengo en la nevera?"*
+  2. *"Lista mi inventario de cocina."*
+  3. *"¿Hay arroz en la nevera?"*
+- **Evaluación**: 3 consultas x 3 modos = **9 turnos**.
+""")
+
+code(r"""
+# Validación: consultar_inventario (DatosCocinaMCP) — 9 turnos
+consultas_consultar_inventario = [
+    '¿Qué tengo en la nevera?',
+    'Lista mi inventario de cocina.',
+    '¿Hay arroz en la nevera?',
+]
+
+await correr_pruebas_tool('consultar_inventario', consultas_consultar_inventario, 'DatosCocinaMCP')
+""")
+
+markdown(r"""
+### 8.9 Herramienta: `info_producto_api` (Servidor: `AlimentosAPIMCP`)
+
+Consulta en vivo a la API externa de OpenFoodFacts mediante código de barras comercial.
+- **Casos de prueba (3)**:
+  1. *"Consulta el producto con código de barras 3017620422003."*
+  2. *"Busca en OpenFoodFacts el código de barras 5449000000996."*
+  3. *"¿Cuántas kcal tiene el producto 5449000000996 segun la API?"*
+- **Evaluación**: 3 consultas x 3 modos = **9 turnos**.
+""")
+
+code(r"""
+# Validación: info_producto_api (AlimentosAPIMCP) — 9 turnos
+consultas_info_producto_api = [
+    'Consulta el producto con código de barras 3017620422003.',
+    'Busca en OpenFoodFacts el código de barras 5449000000996.',
+    '¿Cuántas kcal tiene el producto 5449000000996 segun la API?',
+]
+
+await correr_pruebas_tool('info_producto_api', consultas_info_producto_api, 'AlimentosAPIMCP')
+""")
+
+markdown(r"""
+### 8.10 Categoría `todas_las_tools`: Mezclas complejas multi-herramienta (6 turnos)
+
+Valida la orquestación y encadenamiento entre herramientas de diferentes servidores MCP en un único turno de usuario:
+- **Mezcla 1 (3 tools / 3 servidores)**: Receta (`buscar_recetas`) + Inventario (`consultar_inventario`) + Cálculo calórico (`calcular_kcal`).
+- **Mezcla 2 (5 tools / 3 servidores)**: Búsqueda (`buscar_recetas`) + Detalle (`leer_receta`) + Escalado (`escalar_cantidad`) + Nutrición (`consultar_calorias`) + Alérgenos (`consultar_alergias`).
+- **Regla de éxito**: En `Guided` y `Autonomous` se requiere invocar la cadena completa esperada; en `Deterministic`, al no haber encadenamiento multi-paso, se evalúa la inferencia de la tool primaria.
+""")
+
+code(r"""
+# Validación: Categoría todas_las_tools (6 turnos)
+casos_mezclas = [
     ('Busca una receta sencilla de ensalada, revisa qué tengo en la nevera '
      'y dime cuántas kcal tienen 200 gramos de aguacate.',
      ['buscar_recetas', 'consultar_inventario', 'calcular_kcal']),
@@ -857,69 +1143,31 @@ MEZCLAS = [
       'consultar_alergias']),
 ]
 
-SIN_DATOS = 'Recomiendame un restaurante japonés cerca de la Torre Eiffel con reserva para mañana.'
-
-async def validar_caso(tipo, ref, consulta, modo, esperada):
-    # Un turno de la bateria: la regla de ok depende del tipo de caso y del
-    # modo (docstring evitada: el bloque de celda va entre comillas triples).
-    resp, traza, seg = await responder(consulta, modo=modo)
-    usadas = traza.get('tools_usadas') or []
-    if tipo == 'tool':
-        ok = esperada in usadas
-    elif tipo == 'mezcla':
-        # En Deterministic el host solo ejecuta la tool inferida (no hay
-        # encadenamiento): se registra esa conducta, no un fallo.
-        ok = (sum(t in usadas for t in esperada) == len(esperada)
-              if modo != 'Deterministic' else len(usadas) == 1)
-    else:  # abstencion: la respuesta correcta NO usa ninguna herramienta
-        ok = len(usadas) == 0
-    return {'tipo': tipo, 'ref': ref, 'modo': modo,
-            'usadas': ','.join(usadas) or '(ninguna)', 'ok': ok,
-            'latencia_s': round(seg, 1), 'resp': resp}
-
-async def correr_bateria():
-    # Orden de la bateria (estrategia de ejecucion):
-    #   CATEGORIA tool: herramienta -> consulta -> modo
-    #   CATEGORIA todas_las_tools: mezcla -> modo
-    #   CATEGORIA sin_datos: modo
-    # Cada turno se imprime COMPLETO (respuesta + Fuentes garantizada) para
-    # que la entrega sea analizable pregunta por pregunta.
-    filas = []
-    print('CATEGORIA tool — 3 consultas x 3 modos por cada herramienta')
-    for herramienta, consultas in VALIDACION:
-        print(f'\n== {herramienta} ==')
-        for n, consulta in enumerate(consultas, 1):
-            for modo in MODOS:
-                f = await validar_caso('tool', herramienta, consulta, modo, herramienta)
-                f['caso'] = n
-                filas.append(f)
-                print(f"\n  caso {n} [{f['modo']}] tools={f['usadas']} ({f['latencia_s']:.1f} s)")
-                print(f['resp'])
-    print('\nCATEGORIA todas_las_tools — 2 mezclas x 3 modos')
-    for n, (consulta, esperadas) in enumerate(MEZCLAS, 1):
-        for modo in MODOS:
-            f = await validar_caso('mezcla', f'mezcla {n}', consulta, modo, esperadas)
-            f['caso'] = n
-            filas.append(f)
-            print(f"\n  mezcla {n} [{f['modo']}] tools={f['usadas']} ({f['latencia_s']:.1f} s)")
-            print(f['resp'])
-    print('\nCATEGORIA sin_datos — el agente debe abstenerse (3 modos)')
-    for modo in MODOS:
-        f = await validar_caso('abstencion', 'sin datos', SIN_DATOS, modo, None)
-        filas.append(f)
-        print(f"\n  [{f['modo']}] tools={f['usadas']} ({f['latencia_s']:.1f} s)")
-        print(f['resp'])
-    return filas
-
-filas_bateria = await correr_bateria()
+await correr_pruebas_mezclas(casos_mezclas)
 """)
 
-md(r"""
-**Observación (corrida real).** POR LLENAR — resultado turno a turno de la batería: las 9 herramientas con sus 3 casos x 3 modos (categoría `tool`), las 2 mezclas x 3 modos (categoría `todas_las_tools`) y el caso sin datos x 3 modos (categoría `sin_datos`), con las latencias.
+markdown(r"""
+### 8.11 Categoría `sin_datos`: Evaluación de abstención y mitigación de alucinación (3 turnos)
+
+Evalúa la solidez del sistema ante una consulta con información inexistente tanto en el corpus de recetas como en las herramientas de base de datos y API viva (*restaurante en París*).
+- **Comportamiento esperado**: El agente **no debe invocar ninguna herramienta** MCP y debe admitir honestamente la falta de información, evitando inventar respuestas documentales inexistentes.
 """)
 
 code(r"""
-# Resumen de la batería: acierto por (categoria, herramienta, modo).
+# Validación: Categoría sin_datos (3 turnos)
+consulta_sin_datos = 'Recomiendame un restaurante japonés cerca de la Torre Eiffel con reserva para mañana.'
+
+await correr_pruebas_abstencion(consulta_sin_datos)
+""")
+
+markdown(r"""
+### 8.12 Resumen consolidado de la batería completa (90 turnos)
+
+A continuación se presenta la tabla agregada por **categoría (`tipo`)**, **herramienta o caso (`ref`)** y **modo de ejecución (`modo`)** que consolida el desempeño de los 90 turnos evaluados.
+""")
+
+code(r"""
+# Resumen consolidado de la batería: acierto y latencia por (categoría, herramienta, modo).
 resumen_bateria = (
     pd.DataFrame(filas_bateria)
     .groupby(['tipo', 'ref', 'modo'])
@@ -931,8 +1179,8 @@ resumen_bateria = (
 display(resumen_bateria)
 """)
 
-md(r"""
-**Observación (corrida real).** POR LLENAR — lectura del resumen de la batería: qué herramientas pasaron las 3 validaciones, cómo se comportaron las mezclas y si el agente se abstuvo ante información inexistente.
+markdown(r"""
+**Observación (corrida real).** POR LLENAR — análisis de la batería de 90 turnos: rendimiento por herramienta en los 3 modos (el patrón de fallos en consultas colindantes), el encadenamiento de las mezclas (mezcla 1 en Guided), el caso sin base de tool de la mezcla 2, la abstención en `sin_datos` y las Fuentes garantizadas.
 """)
 
 # ==========================================================================
